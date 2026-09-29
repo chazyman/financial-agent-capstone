@@ -1,0 +1,12 @@
+.env
+storage_state.json
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/ListEquities.csv
+data/processed/*
+!data/processed/.gitkeep
+notebooks/scratch/
+CLAUDE.md
