@@ -10,3 +10,6 @@ data/processed/*
 !data/processed/.gitkeep
 notebooks/scratch/
 CLAUDE.md
+
+# Local reference material (course notebook index files)
+Resources/
