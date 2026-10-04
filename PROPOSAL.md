@@ -1,7 +1,7 @@
 # Capstone Proposal: A Financial AI Agent Assistant
 
 **Author:** C. de Montaigu
-**Date:** 2026-09-27, revised 2026-10-02
+**Date:** 2026-09-27, revised 2026-10-03
 **Course grounding:** *Agentic AI for Finance* (4-day course) + *AI Agents: The Definitive Guide* by Nicole Königstein (O'Reilly, [github.com/Nicolepcx/ai-agents-the-definitive-guide](https://github.com/Nicolepcx/ai-agents-the-definitive-guide))
 **Companion:** [docs/DESIGN.md](docs/DESIGN.md) holds the implementation detail: tools and skills, data model, project structure, runtime and infrastructure, configuration, and traceability.
 
@@ -82,7 +82,7 @@ ETFs are single instruments: their holdings are never fetched. Equities get SEC 
 ### 3.2 Sources
 
 <details>
-<summary><b>The 7 sources</b> (what each provides and how it is used)</summary>
+<summary><b>The 8 sources</b> (what each provides and how it is used)</summary>
 
 | Source | Content | Use |
 |---|---|---|
@@ -90,7 +90,8 @@ ETFs are single instruments: their holdings are never fetched. Equities get SEC 
 | Company investor-relations pages | Annual reports, earnings decks, press releases (PDF/HTML) | Multimodal text + tables + charts; company news |
 | State Street SPDR fund pages | Fact sheets, prospectuses, annual reports (PDF) | Fund-level documents for the 11 ETFs |
 | [Stooq](https://stooq.com) / [Stockanalysis.com](https://stockanalysis.com) | Price and fundamentals CSVs | Structured figures to cross-check filings and charts; one year of daily prices for 1-week, 1-month and 3-month trends |
-| [TipRanks](https://www.tipranks.com) (subscriber) | Analyst ratings and price targets, via MCP server | Analyst consensus |
+| [TipRanks](https://www.tipranks.com) (subscriber) | Analysts' rating actions, consensus and the six model ratings of its AI stock analysis, via its MCP server | Analyst consensus computed in code; AI ratings reported apart. Metered, and cached under its terms of use |
+| Third-party analyst report PDFs, supplied by hand | Two-column cards, borderless tables, vector charts | A demanding layout for Docling; third-party figures are weighed below filings |
 | [Exa](https://exa.ai) search API | Agentic web search: third-party news articles and public pages | Secondary coverage per ticker, ingested into the corpus |
 | Earnings-call transcripts (e.g. Motley Fool) | Text | Management commentary and guidance |
 
@@ -100,11 +101,64 @@ Data is acquired four ways:
 - direct download;
 - agentic web search (Exa) and public scraping (custom code);
 - the TipRanks MCP server;
-- a local Playwright browser session logged in with the user's account, only for subscriber pages the MCP server doesn't cover.
+- a file supplied by hand, for a document with no permitted automated path, such as an analyst report PDF.
 
-**Web search is acquisition only.** Search results are ingested into the corpus before anything can cite them; no answer quotes a live web result. Credentials stay in `.env` and never reach an LLM prompt. The scraping fallback stays off until TipRanks' terms of use are checked ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)).
+**Web search is acquisition only.** Search results are ingested into the corpus before anything can cite them; no answer quotes a live web result. Credentials stay in `.env` and never reach an LLM prompt. TipRanks data is metered and cached under its terms of use: it expires, and it never enters the evaluation set ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)).
 
 ## 4. Architecture
+
+One Python package, the engine, sits between its callers and every outside system. The diagram shows what talks to what. Sections 4.1 to 4.3 then show how ingestion, retrieval and the agents flow, and 4.4 shows what runs where.
+
+```mermaid
+flowchart TB
+    subgraph CALLERS["Callers"]
+        NB["Notebooks 01–06"]
+        TS["Tests"]
+        WK["Worker<br/>scheduled refresh"]
+    end
+
+    subgraph ENGINE["finrag_engine: one Python package"]
+        API["Engine: the only public API<br/>ingest · refresh · retrieve · answer · ask"]
+        GR["LangGraph graphs<br/>ingestion · retrieval · answer · supervisor with gates"]
+        AG["Sub-agents (Phase 5)"]
+        GW["Tool gateway<br/>allowlist · budget · validation"]
+        TL["Tools: typed functions<br/>and pure calculations"]
+        ST["Stores"]
+        BE["Backends<br/>one interface per outside service, each with a fake"]
+        TR["Tracer<br/>run record"]
+        API --> GR
+        GR --> AG --> GW --> TL
+        GR --> TL
+        GR --> TR
+        TL --> ST
+        TL --> BE
+    end
+
+    CALLERS --> API
+
+    PG[("PostgreSQL + pgvector<br/>chunks, typed records, run record")]
+    FS[("Files<br/>crops and Docling artifacts")]
+    MS["models service on the laptop GPU<br/>Docling /parse · LightOnOCR /ocr<br/>Qwen3-VL-Reranker /rerank · sentiment /sentiment"]
+    OR["OpenRouter<br/>chat, vision, embeddings, judge"]
+    TM["TipRanks MCP server<br/>ratings, consensus, AI analysis"]
+    WEB["Exa search · SEC · IR pages · SPDR · Stooq"]
+    RQ[("Redis job queue")]
+    LF["Langfuse Cloud<br/>masked traces and scores"]
+
+    ST --> PG
+    ST --> FS
+    BE --> MS
+    BE --> OR
+    BE --> TM
+    BE --> WEB
+    BE --> RQ --> WK
+    TR --> PG
+    TR -.-> LF
+```
+
+- **The engine's API is a Python object, not a web service.** Notebooks, tests and the worker all call the same five methods. The only HTTP endpoints the project owns are on the `models` service, which serves the four local models to the engine.
+- **The tool gateway is inside the engine.** A sub-agent reaches a tool only through it, where its allowlist and the run's budget are checked. The pipelines call their tools directly, in an order fixed in code.
+- **Every outside system sits behind one backend interface with a fake,** so the engine is tested without a key, a GPU or a network.
 
 The RAG core is **two pipelines sharing one PostgreSQL database**: pgvector holds the chunk embeddings, and relational tables hold typed records.
 - **Ingestion** runs on a schedule in the worker, and when a question finds an instrument's data stale: inline for prices, news and ratings, queued to the worker for documents. It is the only writer to the corpus.
@@ -121,7 +175,7 @@ flowchart TB
     subgraph ACQ["① Acquire: the only agent-driven step"]
         direction TB
         A["Sources<br/>filings, IR decks, fund docs, news pages,<br/>price/fundamentals CSV, TipRanks MCP"]
-        B1["download / web search + public scrape /<br/>MCP / authenticated scrape"]
+        B1["download / web search + public scrape /<br/>MCP / supplied file"]
         A --> B1
     end
 
@@ -226,6 +280,7 @@ flowchart TB
 ```
 
 - **Filters come before similarity.** "Not allowed" can't be expressed as a low score. Constraints such as ticker, date window and "checkable sources only" are therefore hard filters: a SQL `WHERE` clause in the same pgvector query.
+- **Every answer is as of a date.** A run takes an as-of date, today by default. A source published or filed after it is excluded by the same hard filters, and every trend window and "latest" value ends at it. The date is stored with the run and shown in the answer, so an answer can be reproduced after the corpus has grown.
 - **Text and visual chunks are scored within their own kind before merging.** Otherwise text wins on geometry alone, and tables and charts never reach the top results.
 - **Sources are weighed by how far they can be trusted.** Each source has a coefficient from 1 to 10, set in config: 10 for company filings, 6 for a third-party, AI-written report. It weighs the reranked order, decides which record wins when two sources give the same figure, and is shown beside every citation. A policy setting can turn it into a hard floor. It is separate from how reliably an element was extracted, and a disagreement between sources is shown, never resolved silently.
 - **The drafter sees the image of a chart.** Text and tables reach the drafting step as text. A chart or picture hit also sends its crop, so a claim about shape is made from the image itself. A number read off that image is still blocked by the rule below.
@@ -243,7 +298,7 @@ Phase 5 wraps the pipelines of Phases 1–4 as sub-agents under a supervisor; no
 - **Supervisor**: plans the work. One model call scopes the question and returns a typed plan: which sub-agents run, in what order, and whether an exact figure is needed. Code then walks that plan: it refreshes stale data, hands each sub-agent its task and collects the result, so no model chooses the next agent. It does not run the guardrails itself: every answer passes through the gates below on its way through the graph.
 - **Data Aggregator**: decides *what to acquire*, meaning which sources to fetch and which web searches to run for an instrument, then hands everything to the deterministic ingestion sub-graph (4.1), which is the only writer to the corpus.
 - **Researcher**: turns a sub-query into predicates and runs the retrieval sub-graph over filings, fund documents and fundamentals (4.2 ①–⑤). The sub-graph runs as a whole, so its sufficiency gate can't be skipped. When the gate fails, the Researcher retries with a new query, up to `retrieval.max_query_rewrites` times, then reports what is missing.
-- **Market Intelligence**: covers what the market is saying *now*: date-windowed news, analyst ratings with consensus computed in code, and checks of figures quoted in the news against filings. It is a separate agent because its sources are time-sensitive, duplicated across outlets, opinionated and untrusted. That makes it the main prompt-injection surface, which is kept away from the filings context.
+- **Market Intelligence**: covers what the market is saying *now*: date-windowed news, analyst ratings with consensus computed in code, AI-model ratings reported apart from the analysts, and checks of figures quoted in the news against filings. It is a separate agent because its sources are time-sensitive, duplicated across outlets, opinionated and untrusted. That makes it the main prompt-injection surface, which is kept away from the filings context.
 - **Financial Analyst**: turns evidence into an answer. It computes comparisons and metrics with deterministic tools and drafts the response as typed claims, each citing a chunk or a typed record and labelled magnitude or shape (4.2 ⑥). It writes claims but never approves them; the output gate does.
 
 **Guardrails are graph nodes, not tool calls.** They sit on fixed edges of the supervisor graph, so no LLM can skip them:
@@ -283,7 +338,7 @@ Each sub-agent is an LLM loop with an allowlist of **tools** and **skills**:
 
 Sub-agents don't share a conversation. Each receives a typed brief and returns a typed result (evidence, a news digest or a draft), so news text never enters the Researcher's context.
 
-The 38 tools, the 6 skills, the plan and the handoffs are in [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills). The market intelligence workflow is in [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow).
+The 39 tools, the 6 skills, the plan and the handoffs are in [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills). The market intelligence workflow is in [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow).
 
 ### 4.4 Runtime
 
@@ -292,7 +347,7 @@ One Python package, the **AI engine**, holds all the logic as tools and LangGrap
 - an ingestion **worker** (Redis queue) for scheduled refreshes and stale documents;
 - the tests.
 
-**Productionization**, moving the engine into an agent harness compatible with LangGraph, is outside the capstone's scope. Its design is still to be defined.
+**Productionization**, moving the engine into an agent harness compatible with LangGraph, is outside the capstone's scope. Its design is still to be defined. The engine is built so that this, and later time-series and investment-scenario work, extend it without a rewrite ([DESIGN §9](docs/DESIGN.md#9-runtime-and-infrastructure)).
 
 **Infrastructure** runs under **Docker Compose**: PostgreSQL + pgvector, Redis, the worker, and a single `models` service that owns the laptop's NVIDIA GPU for Docling, OCR, reranking and news sentiment. Notebooks and tests run on WSL2 in a `uv` environment.
 
@@ -309,34 +364,67 @@ The stored trajectories and scores also leave the door open to a self-improving 
 
 ## 5. Roadmap
 
-Each phase ships a demo notebook backed by tested engine code, so the project stays runnable at every step. Six notebooks are the deliverable; exploration notebooks are throwaway and not part of it.
+Each phase ships a demo notebook backed by tested engine code, so the project stays runnable at every step. Six notebooks are the deliverable; exploration notebooks are throwaway and not part of it. How each phase is built is in Section 6.
 
 | Phase | Delivers | Notebooks |
 |---|---|---|
-| 0. Environment | WSL2 + Docker Desktop with the NVIDIA GPU visible to containers; compose services (postgres + pgvector, redis, worker, models); `uv` lockfile and environment with a Jupyter kernel; Langfuse Cloud keys; risk checks in scratch notebooks before any code depends on them: OpenRouter embeds images with Gemini Embedding 2, TipRanks MCP `list_tools`, the four GPU models fit in 16 GB, and the Stooq, Stockanalysis and SPDR downloads work within their terms | — |
-| 1. Multimodal RAG | Corpus download; the deterministic ingestion sub-graph (Docling parsing with OCR fallback, chunks with full metadata, joint text + image embeddings); filtered, reranked retrieval; a first answer graph run from a notebook; a stored run record and a Langfuse trace for every graph run (4.5); a hand-labelled QA set with a retrieval hit-rate check | `01_ingestion`, `02_retrieval` |
+| 0. Environment | WSL2 + Docker Engine with the NVIDIA Container Toolkit, so containers see the GPU; compose services (postgres + pgvector, redis, worker, models); LightOnOCR running on the laptop's GPU in the `models` service; `uv` lockfile and environment with a Jupyter kernel; Langfuse Cloud keys; risk checks as isolated scripts (`spikes/phase0`) before any code depends on them: OpenRouter embeds images with Gemini Embedding 2, the four GPU models fit in 16 GB, and the Stooq, Stockanalysis and SPDR downloads work within their terms. The TipRanks MCP check was done in October 2026 ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)) | — |
+| 1. Multimodal RAG | Corpus download; the deterministic ingestion sub-graph (Docling parsing with OCR fallback, chunks with full metadata, joint text + image embeddings); filtered, reranked retrieval; a first answer graph run from a notebook; a stored run record and a Langfuse trace for every graph run (4.5); a hand-labelled QA set with a retrieval hit-rate check and a first behaviour baseline per question (evidence, path, judged scores, time and cost); an analyst report PDF as the sample for Docling's layout handling and a rasterised filing as the sample for LightOnOCR | `01_ingestion`, `02_retrieval` |
 | 2. Structured extraction | SEC XBRL facts and table cells → typed records, tables verified by agreement; one ticker key across all sources; news and analyst ratings as timestamped records; one year of daily prices and the deterministic trend tools (price, consensus, news over 1w/1m/3m); scheduled refresh in the worker | `03_structured_extraction` |
 | 3. Charts + provenance | Chart classification, JSON estimates and captions; chart checks against filings data; the provenance gate (draft → `verify_claims` → one redraft) as a reusable sub-graph, proven by blocking a forged chart-number claim | `04_charts_provenance` |
-| 4. Evaluation | Ragas harness on the QA set, extended with synthetic questions and re-run on the Phase 1–3 graphs; evaluation scores stored with each run and shown in Langfuse; trajectory ranking of the answer graph's paths (sufficiency stop, redraft) | `05_evaluation` |
+| 4. Evaluation | The QA set extended with questions generated with Ragas and re-run on the Phase 1–3 graphs; hard checks and DeepEval's judged scores, each stored with its run, compared with its baseline and shown in Langfuse; trajectory ranking of the answer graph's paths (sufficiency stop, redraft) | `05_evaluation` |
 | 5. Multi-agent + hardening | Supervisor and sub-agents (4.3) wrapping the Phase 1–4 pipelines; the skill loader and the 6 skills; agentic acquisition; input and output guardrail gates and ingestion screening; trajectory evaluation of the agents; model fallback and a per-query cost cap | `06_multi_agent` (the capstone demo) |
 
-## 6. Evaluation
+## 6. Development loop
 
-- **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1 (retrieval hit rate), then Ragas precision/recall from Phase 4 on that set plus synthetic questions, tracked per phase.
+Each phase of the roadmap is built one slice at a time. A slice is a single behaviour visible at an engine entry point, such as "the tables of a born-digital PDF reach the store". The spec is the target and the test result is the measurement.
+
+```mermaid
+flowchart TB
+    SPEC["Spec<br/>one slice: a behaviour at an engine entry point"]
+    TEST["Test, written first<br/>unit or end-to-end; seen to fail"]
+    CODE["Code<br/>until the test passes"]
+    GATE{"Gate<br/>this slice, the earlier slices of the phase,<br/>the earlier phases, no unintended shift"}
+    COMMIT["One commit"]
+    MORE{"More slices<br/>in the phase?"}
+    CLOSE["Phase close<br/>evaluation run on the real models against the baseline;<br/>notebook run from top to bottom"]
+    WRONG["Wrong spec<br/>assess the impact, find the rollback point,<br/>correct the spec"]
+
+    SPEC --> TEST --> CODE --> GATE
+    GATE -->|pass| COMMIT --> MORE
+    GATE -->|"the code is wrong"| CODE
+    GATE -->|"the spec is wrong"| WRONG --> SPEC
+    MORE -->|yes| SPEC
+    MORE -->|no| CLOSE
+    CLOSE -.->|"a shift nobody intended"| WRONG
+```
+
+- **The gate is fast and free.** It runs on fakes: the slice's own test, every earlier slice of the phase and the earlier phases. It also checks that data stays consistent, that two runs at once don't interfere, and that nothing got slower.
+- **A phase closes on the real models.** Each question keeps a baseline of its evidence, path, scores, time and cost, and the closing run is compared with it (Section 7). A slice that changes what a model sees or writes gets the same run at its own gate.
+- **A wrong spec sends the work back, not forward.** Either a dependency behaved differently than assumed, or a design choice did not hold. Work returns to the last slice whose code is still correct, the spec is corrected first, and slicing restarts from there.
+
+The loop is defined in [DESIGN §9.2](docs/DESIGN.md#92-development), and each phase's slices are listed in `docs/slices/`.
+
+
+## 7. Evaluation
+
+- **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1 (retrieval hit rate), then DeepEval's judged scores from Phase 4 on that set plus generated questions. Hard checks must pass; a judged score must not fall below its stored baseline.
 - **Grounding:** every numeric claim traces to a chunk, table cell or record, and a forged chart-number claim is blocked.
+- **Behaviour shift:** each question keeps a baseline of its evidence, path, scores, time and cost. A later run is compared with it, and a shift nobody intended blocks the slice or the phase.
 - **Traceability:** every run has a stored record, and replaying it after a refresh reports which sources changed.
 - **Multimodal pipeline:** table agreement rate, chart-routing accuracy, OCR routing, and retrieval recall per modality.
-- **Market intelligence:** entity tagging, dedupe, date-window correctness, and consensus figures that match the source.
+- **Market intelligence:** entity tagging, dedupe, date-window correctness, and consensus arithmetic checked on synthetic ratings.
+- **As-of date:** an answer never uses a source published after its as-of date, and the same question at the same date returns the same evidence.
 - **Trajectories:** the answer graph's paths from Phase 4; the agents' choices from Phase 5 (right plan, right tool, right skill, self-correction when wrong).
 - **Safety:** adversarial prompts from the course's unsafe-agent scenarios, including injections planted in scraped pages.
 
 Detailed checks: [DESIGN §11](docs/DESIGN.md#11-evaluation-checks-in-detail).
 
-## 7. Tech Stack
+## 8. Tech Stack
 
 Only what this capstone uses. Model IDs and switches live in `config/settings.yaml`.
 
-### 7.1 Models
+### 8.1 Models
 
 | Model | Runs | Role | Config key |
 |---|---|---|---|
@@ -349,7 +437,7 @@ Only what this capstone uses. Model IDs and switches live in `config/settings.ya
 | Guard model (to be chosen) | OpenRouter | `check_safety`'s model stage, after its deterministic rules | `models.guard` |
 | Financial-phrasebank sentiment classifier (to be chosen) | Local GPU (`models` service) | News sentiment | `models.sentiment` |
 
-### 7.2 Stack and toolchain
+### 8.2 Stack and toolchain
 
 <details>
 <summary><b>Libraries and services by layer</b></summary>
@@ -359,17 +447,17 @@ Only what this capstone uses. Model IDs and switches live in `config/settings.ya
 | Jobs | **arq** + Redis (ingestion worker) |
 | Orchestration | **LangGraph**, LangChain primitives, `langchain-openai` pointed at OpenRouter |
 | LLM + embedding access | **OpenRouter** chat and `/embeddings` (`openrouter.data_collection: deny` on every call) |
-| Data acquisition | `requests`, **Exa** (agentic web search), `langchain-mcp-adapters` (TipRanks), **Playwright** (authenticated fallback) |
+| Data acquisition | `requests`, **Exa** (agentic web search), `langchain-mcp-adapters` (TipRanks) |
 | Document parsing | **Docling** + `docling-core`, **PyMuPDF** + **Pillow** |
 | Local model runtime | `transformers` ≥ 5.0, `torch`, `qwen-vl-utils`, in the `models` image only |
 | Structured output + config | **Pydantic v2**, `pydantic-settings` (`config/settings.yaml`, `config/sources.yaml` + `.env`; [DESIGN §10](docs/DESIGN.md#10-configuration)) |
-| Storage | **PostgreSQL + pgvector** (chunks, embeddings and typed records in one database), SQLAlchemy, Alembic migrations |
-| Evaluation + tracing | **Ragas**; **Langfuse Cloud** for masked traces and scores; run and ingestion records in PostgreSQL |
+| Storage | **PostgreSQL + pgvector** (chunks, embeddings and typed records in one database), async SQLAlchemy, Alembic migrations |
+| Evaluation + tracing | **DeepEval** (judged scores), **Ragas** (question generation); **Langfuse Cloud** for masked traces and scores; run and ingestion records in PostgreSQL |
 | Packaging + runtime | **Jupyter** notebooks on WSL2 with a `uv` lockfile; **Docker Compose** for postgres, redis, the worker and `models`; the laptop's RTX 3080 Ti (16 GB) is used only by the `models` service |
 
 </details>
 
-## 8. References
+## 9. References
 
 - Course PDFs: `Packt_agentic_AI_finance_day_{one,two,three,four}.pdf`.
 - Course notebooks. The architecture in Section 4 was checked against the Day 2 notebooks:
