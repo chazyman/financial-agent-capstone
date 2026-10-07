@@ -1,9 +1,9 @@
 # Capstone Proposal: A Financial AI Agent Assistant
 
 **Author:** C. de Montaigu
-**Date:** 2026-09-27, revised 2026-10-03
+**Date:** 2026-09-27, revised 2026-10-06
 **Course grounding:** *Agentic AI for Finance* (4-day course) + *AI Agents: The Definitive Guide* by Nicole Königstein (O'Reilly, [github.com/Nicolepcx/ai-agents-the-definitive-guide](https://github.com/Nicolepcx/ai-agents-the-definitive-guide))
-**Companion:** [docs/DESIGN.md](docs/DESIGN.md) holds the implementation detail: tools and skills, data model, project structure, runtime and infrastructure, configuration, and traceability.
+**Companion:** [docs/DESIGN.md](docs/DESIGN.md) holds the implementation detail: tools and skills, data model, project structure, runtime and infrastructure, configuration, traceability, and memory.
 
 ---
 
@@ -118,7 +118,7 @@ flowchart TB
     end
 
     subgraph ENGINE["finrag_engine: one Python package"]
-        API["Engine: the only public API<br/>ingest · refresh · retrieve · answer · ask"]
+        API["Engine: the only public API<br/>ingest · refresh · retrieve · answer · ask · resume"]
         GR["LangGraph graphs<br/>ingestion · retrieval · answer · supervisor with gates"]
         AG["Sub-agents (Phase 5)"]
         GW["Tool gateway<br/>allowlist · budget · validation"]
@@ -136,7 +136,7 @@ flowchart TB
 
     CALLERS --> API
 
-    PG[("PostgreSQL + pgvector<br/>chunks, typed records, run record")]
+    PG[("PostgreSQL + pgvector<br/>chunks, typed records, run record,<br/>checkpoints and memory")]
     FS[("Files<br/>crops and Docling artifacts")]
     MS["models service on the laptop GPU<br/>Docling /parse · LightOnOCR /ocr<br/>Qwen3-VL-Reranker /rerank · sentiment /sentiment"]
     OR["OpenRouter<br/>chat, vision, embeddings, judge"]
@@ -168,7 +168,7 @@ Both follow the process implemented in the course's Day 2 notebooks.
 
 ### 4.1 Ingestion
 
-Only step ① is agent-driven: in Phase 5 the Data Aggregator decides which sources to fetch and which web searches to run (in Phases 1–4 and in scheduled refreshes, acquisition follows the configured source list for each instrument type, with no agent). Steps ②–⑥ are a **deterministic LangGraph sub-graph**. Its control flow is fixed, and models are called only at fixed steps: OCR, chart classification and reading, table re-reads, news sentiment, and safety screening of untrusted text.
+Only step ① is agent-driven: in Phase 5 the Data Aggregator decides which sources to fetch and which web searches to run (in Phases 1–4 and in scheduled refreshes, acquisition follows the configured source list for each instrument type, with no agent). Steps ②–⑥ are a **deterministic LangGraph sub-graph**. Its control flow is fixed, and models are called only at fixed steps: OCR, chart classification and reading, table re-reads, news sentiment, and safety screening of untrusted text. The TipRanks sync is a code step in every phase, and what an agent fetches comes back to it as a receipt, never as content, so fetched data stays out of every model's context.
 
 ```mermaid
 flowchart TB
@@ -257,12 +257,12 @@ The layout rules were checked in October 2026 by running Docling on a real 11-pa
 flowchart TB
     Q["Sub-query from an agent"]
     P["① Predicates: hard filters, never score penalties<br/>ticker, doc type, as-of / date window,<br/>require_checkable when a figure is needed"]
-    SIM["② Similarity over what survived<br/>vector search; typed records by exact lookup,<br/>which skip ③–④"]
+    SIM["② Candidates from what survived<br/>vector search and full-text search;<br/>typed records by exact lookup, which skip ③–④"]
     NORM["③ Modality normalisation<br/>score text and visual chunks within their own kind"]
     RR["④ Rerank with Qwen3-VL-Reranker-2B<br/>crop for tables and charts, text for prose;<br/>then weigh by source truth"]
     SUF{"⑤ Sufficiency<br/>at least retrieval.min_hits chunks + records?"}
     DRAFT["⑥ Draft claims (LLM)<br/>each claim: text + cited chunk or record + magnitude or shape"]
-    VERIFY{"⑦ Verify in code<br/>does each magnitude claim cite a checkable source?"}
+    VERIFY{"⑦ Verify in code<br/>does each magnitude claim cite a checkable source,<br/>and is its number in that source?"}
     EMIT["⑧ Emit<br/>claims + page/bbox anchors + policy footer"]
     STOP["Stop<br/>state why; nothing is repaired silently"]
 
@@ -280,11 +280,12 @@ flowchart TB
 ```
 
 - **Filters come before similarity.** "Not allowed" can't be expressed as a low score. Constraints such as ticker, date window and "checkable sources only" are therefore hard filters: a SQL `WHERE` clause in the same pgvector query.
+- **Candidates are found two ways.** Vector similarity and full-text search run over the same filtered rows, so an exact string is found even when its embedding ranks low.
 - **Every answer is as of a date.** A run takes an as-of date, today by default. A source published or filed after it is excluded by the same hard filters, and every trend window and "latest" value ends at it. The date is stored with the run and shown in the answer, so an answer can be reproduced after the corpus has grown.
 - **Text and visual chunks are scored within their own kind before merging.** Otherwise text wins on geometry alone, and tables and charts never reach the top results.
 - **Sources are weighed by how far they can be trusted.** Each source has a coefficient from 1 to 10, set in config: 10 for company filings, 6 for a third-party, AI-written report. It weighs the reranked order, decides which record wins when two sources give the same figure, and is shown beside every citation. A policy setting can turn it into a hard floor. It is separate from how reliably an element was extracted, and a disagreement between sources is shown, never resolved silently.
 - **The drafter sees the image of a chart.** Text and tables reach the drafting step as text. A chart or picture hit also sends its crop, so a claim about shape is made from the image itself. A number read off that image is still blocked by the rule below.
-- **The provenance rule is enforced in code.** A claim stating a number must cite a checkable source: parsed or OCR text, a table cell or a typed record. A chart can support a claim about shape, never magnitude. Two policy levels are set in config and named in every answer's footer:
+- **The provenance rule is enforced in code.** A claim stating a number must cite a checkable source: parsed or OCR text, a table cell or a typed record. A chart can support a claim about shape, never magnitude. The number itself must then be found in the source the claim cites. Two policy levels are set in config and named in every answer's footer:
   - a second source must *exist*;
   - or, stricter, it must be a table whose second reading *agreed*, or a typed record.
 - **One visible redraft, then stop.** A draft that fails the provenance check goes back to the drafting step once, with the reason. A second failure stops the run. The retry shows in the trace and the answer's footer.
@@ -338,7 +339,9 @@ Each sub-agent is an LLM loop with an allowlist of **tools** and **skills**:
 
 Sub-agents don't share a conversation. Each receives a typed brief and returns a typed result (evidence, a news digest or a draft), so news text never enters the Researcher's context.
 
-The 39 tools, the 6 skills, the plan and the handoffs are in [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills). The market intelligence workflow is in [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow).
+**Memory is in PostgreSQL, and is never a source.** Every graph is checkpointed, so an interrupted run resumes. A session keeps its earlier turns, so a follow-up question can refer to them. A long-term store keeps the user's preferences and a record of past runs. Fixed nodes read and write all of it, no agent does, and a remembered figure can't support a claim: it must be retrieved again ([DESIGN §13](docs/DESIGN.md#13-memory-and-durable-runs)).
+
+The 39 tools, the 5 skills, the plan and the handoffs are in [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills). The market intelligence workflow is in [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow).
 
 ### 4.4 Runtime
 
@@ -368,12 +371,12 @@ Each phase ships a demo notebook backed by tested engine code, so the project st
 
 | Phase | Delivers | Notebooks |
 |---|---|---|
-| 0. Environment | WSL2 + Docker Engine with the NVIDIA Container Toolkit, so containers see the GPU; compose services (postgres + pgvector, redis, worker, models); LightOnOCR running on the laptop's GPU in the `models` service; `uv` lockfile and environment with a Jupyter kernel; Langfuse Cloud keys; risk checks as isolated scripts (`spikes/phase0`) before any code depends on them: OpenRouter embeds images with Gemini Embedding 2, the four GPU models fit in 16 GB, and the Stooq, Stockanalysis and SPDR downloads work within their terms. The TipRanks MCP check was done in October 2026 ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)) | — |
-| 1. Multimodal RAG | Corpus download; the deterministic ingestion sub-graph (Docling parsing with OCR fallback, chunks with full metadata, joint text + image embeddings); filtered, reranked retrieval; a first answer graph run from a notebook; a stored run record and a Langfuse trace for every graph run (4.5); a hand-labelled QA set with a retrieval hit-rate check and a first behaviour baseline per question (evidence, path, judged scores, time and cost); an analyst report PDF as the sample for Docling's layout handling and a rasterised filing as the sample for LightOnOCR | `01_ingestion`, `02_retrieval` |
+| 0. Environment | WSL2 + Docker Engine with the NVIDIA Container Toolkit, so containers see the GPU; compose services (postgres + pgvector, redis, worker, models); LightOnOCR running on the laptop's GPU in the `models` service; `uv` lockfile and environment with a Jupyter kernel; durable runs through the PostgreSQL checkpointer; Langfuse Cloud keys; risk checks as isolated scripts (`spikes/phase0`) before any code depends on them: OpenRouter embeds images with Gemini Embedding 2, the four GPU models fit in 16 GB, and the Stooq, Stockanalysis and SPDR downloads work within their terms. The TipRanks MCP check was done in October 2026 ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)) | — |
+| 1. Multimodal RAG | Corpus download; the deterministic ingestion sub-graph (Docling parsing with OCR fallback, chunks with full metadata, joint text + image embeddings); filtered, hybrid, reranked retrieval; a first answer graph run from a notebook; a stored run record and a Langfuse trace for every graph run (4.5); a hand-labelled QA set with a retrieval hit-rate check and a first behaviour baseline per question (evidence, path, judged scores, time and cost); an analyst report PDF as the sample for Docling's layout handling and a rasterised filing as the sample for LightOnOCR | `01_ingestion`, `02_retrieval` |
 | 2. Structured extraction | SEC XBRL facts and table cells → typed records, tables verified by agreement; one ticker key across all sources; news and analyst ratings as timestamped records; one year of daily prices and the deterministic trend tools (price, consensus, news over 1w/1m/3m); scheduled refresh in the worker | `03_structured_extraction` |
-| 3. Charts + provenance | Chart classification, JSON estimates and captions; chart checks against filings data; the provenance gate (draft → `verify_claims` → one redraft) as a reusable sub-graph, proven by blocking a forged chart-number claim | `04_charts_provenance` |
+| 3. Charts + provenance | Chart classification, JSON estimates and captions; chart checks against filings data; the provenance gate (draft → `verify_claims` → one redraft) as a reusable sub-graph, with its number check, proven by blocking a forged chart-number claim | `04_charts_provenance` |
 | 4. Evaluation | The QA set extended with questions generated with Ragas and re-run on the Phase 1–3 graphs; hard checks and DeepEval's judged scores, each stored with its run, compared with its baseline and shown in Langfuse; trajectory ranking of the answer graph's paths (sufficiency stop, redraft) | `05_evaluation` |
-| 5. Multi-agent + hardening | Supervisor and sub-agents (4.3) wrapping the Phase 1–4 pipelines; the skill loader and the 6 skills; agentic acquisition; input and output guardrail gates and ingestion screening; trajectory evaluation of the agents; model fallback and a per-query cost cap | `06_multi_agent` (the capstone demo) |
+| 5. Multi-agent + hardening | Supervisor and sub-agents (4.3) wrapping the Phase 1–4 pipelines; the skill loader and the 5 skills; agentic acquisition; session memory and the long-term store; input and output guardrail gates and ingestion screening; trajectory evaluation of the agents; model fallback and a per-query cost cap | `06_multi_agent` (the capstone demo) |
 
 ## 6. Development loop
 
@@ -409,9 +412,10 @@ The loop is defined in [DESIGN §9.2](docs/DESIGN.md#92-development), and each p
 ## 7. Evaluation
 
 - **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1 (retrieval hit rate), then DeepEval's judged scores from Phase 4 on that set plus generated questions. Hard checks must pass; a judged score must not fall below its stored baseline.
-- **Grounding:** every numeric claim traces to a chunk, table cell or record, and a forged chart-number claim is blocked.
+- **Grounding:** every numeric claim traces to a chunk, table cell or record; a forged chart-number claim is blocked, and so is a figure that is not in the source it cites.
 - **Behaviour shift:** each question keeps a baseline of its evidence, path, scores, time and cost. A later run is compared with it, and a shift nobody intended blocks the slice or the phase.
 - **Traceability:** every run has a stored record, and replaying it after a refresh reports which sources changed.
+- **Memory and durable runs:** an interrupted run resumes without repeating a step; a follow-up question uses the session but cites fresh evidence; evaluation runs use no memory.
 - **Multimodal pipeline:** table agreement rate, chart-routing accuracy, OCR routing, and retrieval recall per modality.
 - **Market intelligence:** entity tagging, dedupe, date-window correctness, and consensus arithmetic checked on synthetic ratings.
 - **As-of date:** an answer never uses a source published after its as-of date, and the same question at the same date returns the same evidence.
@@ -430,7 +434,7 @@ Only what this capstone uses. Model IDs and switches live in `config/settings.ya
 |---|---|---|---|
 | Primary + fallback LLM (to be chosen; must accept images) | OpenRouter | Agent reasoning, routing, drafting claims from text, tables and chart crops | `models.primary`, `models.fallback` |
 | **Qwen3-VL-32B-Instruct** | OpenRouter | Chart classification, chart → JSON series, chart captions, re-reading table crops for verification | `models.vision` |
-| **Gemini Embedding 2** | OpenRouter | Joint text + image embeddings. If the index must not depend on a hosted model, the switch-in is Qwen3-VL-Embedding-2B on the `models` service, which means re-embedding the corpus | `embedding.model` |
+| **Gemini Embedding 2** | OpenRouter | Joint text + image embeddings. If the index must not depend on a hosted model, the switch-in is Qwen3-VL-Embedding-2B on the `models` service, set to the same dimensions, which means re-embedding the corpus | `embedding.model` |
 | **Qwen3-VL-Reranker-2B** | Local GPU (`models` service) | Vision-language reranking | `retrieval.rerank_model` |
 | **LightOnOCR-2-1B** | Local GPU (`models` service) | OCR fallback for thin or scanned pages | `models.ocr` |
 | Docling's built-in models | Local GPU (`models` service) | Layout detection, table-cell parsing | — |
@@ -445,13 +449,13 @@ Only what this capstone uses. Model IDs and switches live in `config/settings.ya
 | Layer | Tools |
 |---|---|
 | Jobs | **arq** + Redis (ingestion worker) |
-| Orchestration | **LangGraph**, LangChain primitives, `langchain-openai` pointed at OpenRouter |
+| Orchestration | **LangGraph**, LangChain primitives, `langchain-openai` pointed at OpenRouter; `langgraph-checkpoint-postgres` for the checkpointer and the memory store |
 | LLM + embedding access | **OpenRouter** chat and `/embeddings` (`openrouter.data_collection: deny` on every call) |
 | Data acquisition | `requests`, **Exa** (agentic web search), `langchain-mcp-adapters` (TipRanks) |
 | Document parsing | **Docling** + `docling-core`, **PyMuPDF** + **Pillow** |
 | Local model runtime | `transformers` ≥ 5.0, `torch`, `qwen-vl-utils`, in the `models` image only |
 | Structured output + config | **Pydantic v2**, `pydantic-settings` (`config/settings.yaml`, `config/sources.yaml` + `.env`; [DESIGN §10](docs/DESIGN.md#10-configuration)) |
-| Storage | **PostgreSQL + pgvector** (chunks, embeddings and typed records in one database), async SQLAlchemy, Alembic migrations |
+| Storage | **PostgreSQL + pgvector** (chunks, embeddings, typed records, checkpoints and memory in one database), PostgreSQL full-text search, async SQLAlchemy on psycopg 3, Alembic migrations |
 | Evaluation + tracing | **DeepEval** (judged scores), **Ragas** (question generation); **Langfuse Cloud** for masked traces and scores; run and ingestion records in PostgreSQL |
 | Packaging + runtime | **Jupyter** notebooks on WSL2 with a `uv` lockfile; **Docker Compose** for postgres, redis, the worker and `models`; the laptop's RTX 3080 Ti (16 GB) is used only by the `models` service |
 

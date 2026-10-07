@@ -13,16 +13,16 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 | **A. A thin path, text only** | | | | |
 | 1.1 Universe and first stored document | `engine.ingest()` | A text item becomes a document, a chunk and an ingestion record | End-to-end | Not started |
 | 1.2 Embedding | `engine.ingest()` | Every chunk is stored with its vector | End-to-end | Not started |
-| 1.3 Search with predicates | `engine.retrieve()` | Each predicate, the as-of date included, excludes what it should before similarity is scored | End-to-end | Not started |
+| 1.3 Search with predicates | `engine.retrieve()` | Each predicate, the as-of date included, excludes what it should before any candidate is scored; an exact string is found by full-text search | End-to-end | Not started |
 | 1.4 Sufficiency gate and evidence set | `engine.retrieve()` | Too little evidence stops the run and names what is missing | Unit and end-to-end | Not started |
-| 1.5 Run controls around the chat model | none (wrapper) | The budget and the model fallback work on any chat model, a fake included | Unit | Not started |
+| 1.5 Run controls around the chat model | none (wrapper) | The budget, the model fallback and the retry after an invalid output work on any chat model, a fake included | Unit | Not started |
 | 1.6 First answer graph | `engine.answer()` | A question returns claims that each cite retrieved evidence, or a stop with its reason | End-to-end | Not started |
 | 1.7 Run record and tracing | `engine.answer()` | Every run is stored in PostgreSQL and sent, masked, to Langfuse | End-to-end | Not started |
 | 1.8 Behaviour baseline | evaluation run | Each question has a baseline, and a later run is compared with it | Unit and evaluation | Not started |
 | **B. Real documents** | | | | |
 | 1.9 Parse a born-digital PDF | `engine.ingest()` | Typed elements with their page, box and crop reach the store | End-to-end | Not started |
-| 1.10 Text chunks under their heading path | `engine.ingest()` | Text is chunked under headings; furniture is dropped; damage is counted | Unit and end-to-end | Not started |
-| 1.11 Tables | `engine.ingest()` | A table is stored as Markdown or as label-value lines, after the sanity checks | Unit and end-to-end | Not started |
+| 1.10 Text chunks under their heading path | `engine.ingest()` | Text is chunked under headings, a long section in pieces that stand alone; footnotes stay with their text; furniture is dropped; damage is counted | Unit and end-to-end | Not started |
+| 1.11 Tables | `engine.ingest()` | A table is stored as Markdown or as label-value lines, after the sanity checks: signs, scale, subtotals and footnotes included | Unit and end-to-end | Not started |
 | 1.12 Pictures and text printed in charts | `engine.ingest()` | Decorative pictures cost nothing; printed chart text is a linked, quotable chunk | Unit and end-to-end | Not started |
 | 1.13 OCR routing and OCR | `engine.ingest()` | Scanned pages go to OCR with their pictures masked; born-digital pages don't | Unit and end-to-end | Not started |
 | 1.14 Acquisition without an agent | `engine.refresh()` | Configured sources and a supplied file are fetched, deduplicated and ingested | End-to-end | Not started |
@@ -48,9 +48,9 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 
 ### 1.3 Search with predicates
 
-- **Must hold:** one query applies the predicates as a `WHERE` clause and orders what survives by similarity. Predicates: ticker, document type, `require_checkable`, the as-of date on `published_at`, superseded versions, and `injection_suspect`.
-- **Rules:** §4 ("Predicates come before similarity", "Known by then, or not admissible"); §7 ("Exact search first").
-- **Test:** end-to-end on a seeded corpus with planted vectors. For each predicate, a chunk that is the closest match but fails the predicate is not returned. A chunk published after the as-of date is not returned.
+- **Must hold:** the predicates are applied as a `WHERE` clause, and two candidate lists are drawn from what survives: by vector similarity, and by full-text search over the text that was embedded, up to `retrieval.candidates_k` each. Predicates: ticker, document type, filing Item or section, `require_checkable`, the as-of date on `published_at`, superseded versions, and `injection_suspect`.
+- **Rules:** §4 ("Predicates come before similarity", "A section can be a predicate", "Two candidate lists, one pool", "Known by then, or not admissible"); §7 ("Exact search first").
+- **Test:** end-to-end on a seeded corpus with planted vectors. For each predicate, a chunk that is the closest match but fails the predicate is in neither list. A chunk published after the as-of date is not returned. A chunk holding an exact string the query names is in the pool even when its vector ranks outside it.
 - **Rests on:** check 10, closed by slice 0.3.
 
 ### 1.4 Sufficiency gate and evidence set
@@ -61,9 +61,9 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 
 ### 1.5 Run controls around the chat model
 
-- **Must hold:** one wrapper around any `BaseChatModel` counts model calls and cost against the run's `Budget`, switches to the fallback model on failure, and reports each call to the recorder. The scripted chat model for tests exists and goes through it.
-- **Rules:** §5 ("`Budget`", "Model fallback"); §8 ("Run controls wrap the chat model").
-- **Test:** unit. A scripted model that exceeds the call limit ends in `budget_exhausted`. A scripted primary that fails hands over to the fallback, and the switch is recorded.
+- **Must hold:** one wrapper around any `BaseChatModel` counts model calls and cost against the run's `Budget`, switches to the fallback model on failure, and reports each call to the recorder. A structured output that fails its schema is asked for again with the error, up to `policy.max_validation_retries` times per model, and the run then stops with `invalid_output`. A failed call is retried as its failure class allows. The scripted chat model for tests exists and goes through it.
+- **Rules:** §5 ("`Budget`", "Model fallback", "A model output that fails its schema"); §4 ("Retries follow the failure class"); §8 ("Run controls wrap the chat model").
+- **Test:** unit. A scripted model that exceeds the call limit ends in `budget_exhausted`. A scripted primary that fails hands over to the fallback, and the switch is recorded. A scripted model that returns an invalid object, then a valid one, succeeds within the limit; one that never returns a valid one ends in `invalid_output`. A transient failure is retried and a refusal is not.
 - **Rests on:** check 2 (passed).
 
 ### 1.6 First answer graph
@@ -74,9 +74,9 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 
 ### 1.7 Run record and tracing
 
-- **Must hold:** every `engine.answer()` call writes `runs`, `run_evidence` and `run_steps`, a stopped run included, before the answer is returned. The `Tracer` is the only writer. One masked trace per call goes to Langfuse, tagged with the entry point, tickers and environment.
+- **Must hold:** every `engine.answer()` call writes `runs`, `run_evidence` and `run_steps`, a stopped run included, before the answer is returned. The `runs` row is written when the run starts and completed when it ends, and each step names its loop. The `Tracer` is the only writer. One masked trace per call goes to Langfuse, tagged with the entry point, tickers and environment.
 - **Rules:** §12 in full; §7 (record tables).
-- **Test:** end-to-end. A stopped run has its `runs` row. Each cited source has a `run_evidence` row whose hash matches. With Langfuse unreachable, the run completes and its record is stored. A planted key, and a payload from a masked source, never appear in an exported span.
+- **Test:** end-to-end. A stopped run has its `runs` row, and a run killed midway leaves one that never reached `finished`. Each cited source has a `run_evidence` row whose hash matches. With Langfuse unreachable, the run completes and its record is stored. A planted key, and a payload from a masked source, never appear in an exported span.
 - **Rests on:** check 3 (passed) and check 11.
 
 ### 1.8 Behaviour baseline
@@ -103,13 +103,13 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.10 Text chunks under their heading path
 
-- **Must hold:** a text chunk is a heading plus the text under it, up to `chunking.max_chars`. Heading levels are inferred in code and stored as a path in `section`. Page furniture is dropped. Text is NFKC-normalised and unmapped characters are repaired or counted.
-- **Rules:** §3 ("Text chunks follow headings", "Furniture is not content", "Text is normalised and its damage is counted").
-- **Test:** unit for each rule. End-to-end on the fixture: a card under a column heading keeps that heading in its path; no header or footer line is a chunk; the counts in `ingest_runs` match.
+- **Must hold:** a text chunk is a heading plus the text under it, up to `chunking.max_chars`. A longer section is cut at paragraph boundaries, and every piece repeats its heading. Heading levels are inferred in code and stored as a path in `section`, and the embedded text starts with that path. A deck is chunked per slide. A filing chunk carries its Item in `filing_item`. A footnote is attached to the chunk that carries its marker. Page furniture is dropped. Text is NFKC-normalised and unmapped characters are repaired or counted.
+- **Rules:** §3 ("Text chunks follow headings", "A long section is cut at paragraphs", "A deck is chunked per slide", "A filing chunk knows its Item", "A footnote stays with what it qualifies", "Furniture is not content", "Text is normalised and its damage is counted").
+- **Test:** unit for each rule. End-to-end on the fixture: a card under a column heading keeps that heading in its path; a long section gives pieces that each carry the path; a footnote sits with its paragraph; no header or footer line is a chunk; the counts in `ingest_runs` match.
 
 ### 1.11 Tables
 
-- **Must hold:** a table Docling returns is checked in code, then stored as Markdown, or as label-value lines when it is a key-value grid. Prose mistaken for a table is demoted to text. Group rows are joined to their labels. A dash is a missing value. Unit suffixes are read per cell. Each change is counted. Verification against XBRL and a vision model is Phase 2.
+- **Must hold:** a table Docling returns is checked in code, then stored as Markdown, or as label-value lines when it is a key-value grid. Prose mistaken for a table is demoted to text. Group rows are joined to their labels. A dash is a missing value. A value in parentheses is negative. Unit suffixes are read per cell, and a scale stated in the header reaches every cell without one. A subtotal row is flagged, and the detail rows must foot to it. A footnote marker is taken off the value and kept as a reference. Each change is counted. Verification against XBRL and a vision model is Phase 2.
 - **Rules:** §3 ("A table must look like one", "Each element gets the representation it needs").
 - **Test:** unit for each check. End-to-end on the fixture: the cases listed under "Layout regression" in §11 that concern tables.
 
@@ -128,9 +128,9 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.14 Acquisition without an agent
 
-- **Must hold:** `engine.refresh()` resolves the configured sources of one equity and one ETF from `config/sources.yaml`, fetches their documents through the `HttpFetcher` interface, drops repeats by content hash, and ingests the rest. `engine.ingest(path, ticker, source)` ingests a supplied file with its source, such as an analyst report PDF.
-- **Rules:** §2 ("Where sources live", the download and supplied-file paths); §4 (the source's truth coefficient is resolved from config, never stored on a chunk).
-- **Test:** end-to-end with the fake fetcher. The same document fetched twice is stored once. A supplied file carries its declared source. A `network` test fetches one real filing and one real fund document.
+- **Must hold:** `engine.refresh()` resolves the configured sources of one equity and one ETF from `config/sources.yaml`, fetches their documents through the `HttpFetcher` interface, drops repeats by content hash, and ingests the rest. A URL outside the permitted domains is refused. `engine.ingest(path, ticker, source)` ingests a supplied file with its source, such as an analyst report PDF.
+- **Rules:** §2 ("Where sources live", "Only permitted sources are fetched", the download and supplied-file paths); §4 (the source's truth coefficient is resolved from config, never stored on a chunk).
+- **Test:** end-to-end with the fake fetcher. The same document fetched twice is stored once. A supplied file carries its declared source. A fetch from a domain that is not permitted raises `ToolDenied`. A `network` test fetches one real filing and one real fund document.
 - **Rests on:** check 8.
 
 ### 1.15 A refresh never destroys
@@ -146,7 +146,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.16 Normalisation, reranking and source truth
 
-- **Must hold:** similarity scores are standardised within text chunks and within visual chunks before merging. The `models` service gains `/rerank`, and the `Reranker` scores one candidate at a time, a crop for a visual chunk and text for prose, falling back to text and then to retrieval order. Each score is then weighed by the source's truth coefficient. `policy.min_source_truth` excludes weaker sources as a predicate.
+- **Must hold:** the pool is the union of the two candidate lists of slice 1.3. Vector scores are standardised within text chunks and within visual chunks before merging. The `models` service gains `/rerank`, and the `Reranker` scores one candidate at a time, a crop for a visual chunk and text for prose, falling back to text and then to retrieval order; with the reranker off, the two lists are merged by reciprocal rank fusion. Each score is then weighed by the source's truth coefficient. `policy.min_source_truth` excludes weaker sources as a predicate.
 - **Rules:** §4 ("Modality normalisation", "Source truth weighs the order", "Source truth can be a floor").
 - **Test:** end-to-end with the fake reranker. With normalisation on, the best table rises into the top results where it did not before. A filing passage outranks a third-party passage of equal relevance, and a weight of 0 restores the order by relevance. With the floor set, the weaker source is not retrieved.
 - **Evaluation run at its gate:** yes. This is the slice the baseline of 1.8 exists to measure.
@@ -163,7 +163,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ## Left to later phases
 
-- **Phase 2:** typed records, prices, table verification, news and analyst ratings.
-- **Phase 3:** chart classification, series and captions; the provenance gate.
+- **Phase 2:** typed records with their basis and scope, prices, table verification, news and analyst ratings, the TipRanks sync step.
+- **Phase 3:** chart classification, series and captions; the provenance gate, with its number check.
 - **Phase 4:** generated questions and trajectory ranking.
-- **Phase 5:** the agents, the skills and the safety gates.
+- **Phase 5:** the agents, the skills, the safety gates, the no-progress stop, sessions and long-term memory.

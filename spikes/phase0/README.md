@@ -10,7 +10,7 @@ Each script here proves or disproves one assumption the design rests on, before 
 
 ## Status
 
-Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 12 are not run. None of the open checks blocks a Phase 0 slice.
+Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 13 are not run. Check 13 must pass before slice 0.9; none of the other open checks blocks a Phase 0 slice.
 
 ## Results
 
@@ -25,20 +25,22 @@ Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 12 are n
 | 7 | The four GPU models fit in 16 GB inside the `models` container | Docker and the GPU | **Half done** (2026-10-04): Docling and LightOnOCR pass inside a GPU container | See "Check 7a" below. The reranker and the sentiment classifier are not measured | `models_service.idle_unload_seconds` |
 | 8 | The Stooq, Stockanalysis and SPDR downloads work within their terms | Network | Not run | | Alternative sources |
 | 9 | Docling's layout model finds the picture boxes on an image-only page, so they can be masked before OCR | The GPU | Not run | | OCR each layout region separately |
-| 10 | pgvector queries with SQL predicates work through the async database driver | The `postgres` container | Not run | | Sync driver wrapped in a thread, behind the same async store methods |
+| 10 | pgvector queries with SQL predicates, and a full-text candidate list under the same predicates, work through psycopg 3 from async SQLAlchemy | The `postgres` container | Not run | | Sync driver wrapped in a thread, behind the same async store methods |
 | 11 | A masked trace and its scores reach Langfuse, tagged with the slice and the git commit | Langfuse keys | Not run | | The run record in PostgreSQL alone; Langfuse stays optional |
 | 12 | Ragas' `TestsetGenerator` produces usable questions from our documents through OpenRouter | OpenRouter key; needed at the start of Phase 4 | Not run | | DeepEval's `Synthesizer` |
+| 13 | LangGraph's Postgres checkpointer and store work beside our own stores: on psycopg 3, in their own schema, untouched by Alembic. A graph with a sub-graph and a run context resumes after its process is killed, without repeating a completed step. The store's semantic search runs at our embedding dimensions. A node timeout exists on our LangGraph version | The `postgres` container | Not run | | The run record's `run_steps` as the resume log, and tables of our own for preferences and run records; `asyncio.timeout` in a node wrapper |
 
 ## What is left, in priority order
 
 | Priority | Check | When | Why this order |
 |---|---|---|---|
 | 1 | 10. pgvector through the async driver | With slice 0.3, in Phase 0 | It is that slice's own test, and every store depends on the driver |
-| 2 | 8. The three downloads | At the start of the next session. Needs only the network | It costs nothing, and a failure changes the data sources (DESIGN §1, §2). Blocks slice 1.14 |
-| 3 | 11. A masked trace reaches Langfuse | Before slice 1.7. Needs the Langfuse keys in `.env` | Slice 1.7 is the first Phase 1 slice that waits on a check. A failure costs little: the run record is in PostgreSQL |
-| 4 | 9. Docling finds picture boxes on an image-only page | Before slice 1.13. Can run now that containers reach the GPU | The rule that keeps a model's reading of a picture out of the text rests on it (DESIGN §3) |
-| 5 | 7, the rest. Reranker and sentiment classifier, all four models loaded | Once the `models` image exists (slice 0.6), before slice 1.16 | Low risk: two models peak at 5.3 GB of 16 GB |
-| 6 | 12. Ragas generates questions | At the start of Phase 4 | Nothing needs it before the question set is generated |
+| 2 | 13. LangGraph's checkpointer and store in PostgreSQL | With the container of slice 0.3, before slice 0.9 | Checkpointing and memory are required (DESIGN §13), and the driver chosen in slice 0.3 has to suit them |
+| 3 | 8. The three downloads | At the start of the next session. Needs only the network | It costs nothing, and a failure changes the data sources (DESIGN §1, §2). Blocks slice 1.14 |
+| 4 | 11. A masked trace reaches Langfuse | Before slice 1.7. Needs the Langfuse keys in `.env` | Slice 1.7 is the first Phase 1 slice that waits on a check. A failure costs little: the run record is in PostgreSQL |
+| 5 | 9. Docling finds picture boxes on an image-only page | Before slice 1.13. Can run now that containers reach the GPU | The rule that keeps a model's reading of a picture out of the text rests on it (DESIGN §3) |
+| 6 | 7, the rest. Reranker and sentiment classifier, all four models loaded | Once the `models` image exists (slice 0.6), before slice 1.16 | Low risk: two models peak at 5.3 GB of 16 GB |
+| 7 | 12. Ragas generates questions | At the start of Phase 4 | Nothing needs it before the question set is generated |
 
 ## Check 7a: Docling and LightOnOCR on the laptop GPU
 

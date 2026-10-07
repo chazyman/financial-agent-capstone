@@ -16,9 +16,10 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 | 0.6 `models` service on the GPU | The image builds with its fonts and system libraries, the container sees the GPU, and `/health` says so | GPU | Not started |
 | 0.7 Test fixtures | The synthetic layout PDF, the rasterised filing pages with their text-layer twin, and a manifest | Unit | Not started |
 | 0.8 LightOnOCR on the laptop GPU | The `models` service transcribes a rasterised page with LightOnOCR on the GPU, and the engine calls it through `OcrEngine` | GPU | Not started |
+| 0.9 Durable runs | Every graph the `Engine` compiles is checkpointed in PostgreSQL, and an interrupted run resumes with the budget it had left | Integration | Not started |
 
 <details>
-<summary><b>Each slice in detail</b> (8 slices)</summary>
+<summary><b>Each slice in detail</b> (9 slices)</summary>
 
 ### 0.1 Package skeleton
 
@@ -34,16 +35,16 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 
 ### 0.3 PostgreSQL with pgvector
 
-- **Must hold:** `docker compose up -d postgres` gives a database with the `vector` extension. Alembic applies and reverses the first migration. The engine reaches the database through an async driver.
+- **Must hold:** `docker compose up -d postgres` gives a database with the `vector` extension. Alembic applies and reverses the first migration. The engine reaches the database through psycopg 3, the async driver LangGraph's checkpointer also needs (§13.5).
 - **Rules:** §7 ("Exact search first"), §8 ("I/O is async"), §9.1.
 - **Test:** integration. The migration upgrades and downgrades cleanly. One async query filters rows with a `WHERE` clause and orders the rest by vector distance, and returns exactly the rows the predicate allows.
 - **Rests on:** check 10 (pgvector through the async driver). This slice's test closes it.
 
 ### 0.4 Engine shell and the two contexts
 
-- **Must hold:** `Engine(ctx)` accepts a context built from fakes, and `Engine.from_settings()` builds the real one. `RunContext` carries the run id, the as-of date, the wall clock, the budget and the policy level. A graph node receives it through `context_schema`. A run ends in a `RunResult` with a `StopReason`.
+- **Must hold:** `Engine(ctx)` accepts a context built from fakes, and `Engine.from_settings()` builds the real one. `RunContext` carries the run id, the as-of date, the wall clock, the budget (tool calls, model calls, seconds and cost) and the policy level. A graph node receives it through `context_schema`. A run ends in a `RunResult` with a `StopReason`.
 - **Rules:** §8 ("Two contexts, two lifetimes", "`Engine`", "I/O is async"), §4 ("One as-of date per run", "Two clocks"), §5 ("Every run ends in a typed result").
-- **Test:** unit and end-to-end on fakes. A one-node graph run through the engine returns its `RunResult`. Two runs started together with different as-of dates each see their own, and neither waits for the other. A step-limit overrun returns `step_limit` instead of raising. An architecture test fails if any module of the package reads the system clock.
+- **Test:** unit and end-to-end on fakes. A one-node graph run through the engine returns its `RunResult`. Two runs started together with different as-of dates each see their own, and neither waits for the other. A step-limit overrun returns `step_limit` instead of raising, and a run past its time budget returns `timeout`. An architecture test fails if any module of the package reads the system clock.
 - **Rests on:** check 1 (passed).
 
 ### 0.5 Worker
@@ -72,23 +73,32 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 - **Test:** GPU. `/ocr` on a rasterised fixture page recovers at least 95% of the words of its text-layer twin. The model's GPU memory and the seconds per page are recorded. With the fake `OcrEngine`, the same engine call returns the fake's text with no service running.
 - **Rests on:** check 7a (passed inside a GPU container on 2026-10-04: about 20 s a page, 2.5 GB held together with Docling, 5.3 GB at peak) and slices 0.6 and 0.7.
 
+### 0.9 Durable runs
+
+- **Must hold:** every graph the `Engine` compiles gets the PostgreSQL checkpointer, whose tables live in their own schema, outside Alembic. What the budget has spent is part of the graph state, with the as-of date, the policy level and the settings hash the run started with. `engine.resume(run_id)` continues a run from its last completed step, and refuses when the settings hash or the git commit has changed. Sessions and the long-term store are not here: they arrive in Phase 5.
+- **Rules:** §13.1, §13.5; §5 (`Budget`); §8 (`Engine`, psycopg 3).
+- **Test:** integration, on `postgres`. A two-step graph killed after its first step resumes at the second and does not run the first again. The resumed run has the budget it had left. A sub-graph called from a node starts fresh on each call. A resume under a changed settings hash is refused. Unit tests use the in-memory saver.
+- **Rests on:** check 13, and slices 0.3 and 0.4.
+
 </details>
 
 ## Assumption checks to close in this phase
 
-The scripts, their results and the reasons for the order below are in [spikes/phase0/README.md](../../spikes/phase0/README.md). Checks 1 to 6 and 7a have passed. None of the open checks blocks a slice of this phase. Check 12 (Ragas) waits for Phase 4.
+The scripts, their results and the reasons for the order below are in [spikes/phase0/README.md](../../spikes/phase0/README.md). Checks 1 to 6 and 7a have passed. Check 13 must pass before slice 0.9; none of the other open checks blocks a slice of this phase. Check 12 (Ragas) waits for Phase 4.
 
 | Priority | Check | Needs | Blocks |
 |---|---|---|---|
 | 1 | 10. pgvector through the async driver | The `postgres` service | Closed by slice 0.3 |
-| 2 | 8. The Stooq, Stockanalysis and SPDR downloads work within their terms | Network | Slice 1.14 |
-| 3 | 11. A masked trace and its scores reach Langfuse | Langfuse keys | Slice 1.7 |
-| 4 | 9. Docling finds the picture boxes on an image-only page | The GPU | Slice 1.13 |
-| 5 | 7, the rest. The reranker and the sentiment classifier fit beside the other two | The `models` image of slice 0.6 | Slice 1.16 |
+| 2 | 13. LangGraph's Postgres checkpointer and store work beside our own stores | The `postgres` service | Slice 0.9 |
+| 3 | 8. The Stooq, Stockanalysis and SPDR downloads work within their terms | Network | Slice 1.14 |
+| 4 | 11. A masked trace and its scores reach Langfuse | Langfuse keys | Slice 1.7 |
+| 5 | 9. Docling finds the picture boxes on an image-only page | The GPU | Slice 1.13 |
+| 6 | 7, the rest. The reranker and the sentiment classifier fit beside the other two | The `models` image of slice 0.6 | Slice 1.16 |
 
 ## Closing the phase
 
 - Every slice has passed its gate, and `pytest` and `pytest -m integration` pass together.
 - `docker compose up -d` brings up `postgres`, `redis`, `worker` and `models`.
 - LightOnOCR transcribes the rasterised fixture pages on the laptop's GPU, inside the `models` container.
+- A run killed between two steps resumes at the next one (slice 0.9).
 - Every check above has passed, or its fallback has been written into DESIGN.md.
