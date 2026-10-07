@@ -2,7 +2,7 @@
 
 Phase 0 delivers a working environment, the engine's empty shell, LightOnOCR running on the laptop's GPU, and the assumptions the design rests on, proved or replaced ([PROPOSAL §5](../../PROPOSAL.md#5-roadmap)). It has no notebook.
 
-What a slice is, its gate and what happens on a wrong spec are defined once, in [DESIGN §9.2](../DESIGN.md#92-development). Section numbers below refer to DESIGN.md.
+Every slice of this phase is a substrate slice. What a slice is, its two kinds, its gate and what happens on a wrong spec are defined once, in [DESIGN §9.2](../DESIGN.md#92-development). Section numbers below refer to DESIGN.md.
 
 ## The slices, in order
 

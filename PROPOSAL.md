@@ -354,7 +354,7 @@ One Python package, the **AI engine**, holds all the logic as tools and LangGrap
 
 **Infrastructure** runs under **Docker Compose**: PostgreSQL + pgvector, Redis, the worker, and a single `models` service that owns the laptop's NVIDIA GPU for Docling, OCR, reranking and news sentiment. Notebooks and tests run on WSL2 in a `uv` environment.
 
-Services and the development loop are in [DESIGN §9](docs/DESIGN.md#9-runtime-and-infrastructure).
+Services and the Project development loop are in [DESIGN §9](docs/DESIGN.md#9-runtime-and-infrastructure).
 
 ### 4.5 Traceability and observability
 
@@ -378,9 +378,9 @@ Each phase ships a demo notebook backed by tested engine code, so the project st
 | 4. Evaluation | The QA set extended with questions generated with Ragas and re-run on the Phase 1–3 graphs; hard checks and DeepEval's judged scores, each stored with its run, compared with its baseline and shown in Langfuse; trajectory ranking of the answer graph's paths (sufficiency stop, redraft) | `05_evaluation` |
 | 5. Multi-agent + hardening | Supervisor and sub-agents (4.3) wrapping the Phase 1–4 pipelines; the skill loader and the 5 skills; agentic acquisition; session memory and the long-term store; input and output guardrail gates and ingestion screening; trajectory evaluation of the agents; model fallback and a per-query cost cap | `06_multi_agent` (the capstone demo) |
 
-## 6. Development loop
+## 6. Project Development loop
 
-Each phase of the roadmap is built one slice at a time. A slice is a single behaviour visible at an engine entry point, such as "the tables of a born-digital PDF reach the store". The spec is the target and the test result is the measurement.
+Each phase of the roadmap is built one slice at a time. A slice is a single behaviour visible at an engine entry point, such as "the tables of a born-digital PDF reach the store". It is cut vertically through every layer the behaviour needs, and lands as one commit. Phase 0 differs: its slices build the substrate the others are developed on. The spec is the target and the test result is the measurement.
 
 ```mermaid
 flowchart TB

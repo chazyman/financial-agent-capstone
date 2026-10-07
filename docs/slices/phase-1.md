@@ -2,7 +2,7 @@
 
 Phase 1 delivers the ingestion pipeline, filtered and reranked retrieval, a first answer graph, the run record, and a behaviour baseline per question ([PROPOSAL §5](../../PROPOSAL.md#5-roadmap)). Its notebooks are `01_ingestion` and `02_retrieval`.
 
-What a slice is, its gate and what happens on a wrong spec are defined once, in [DESIGN §9.2](../DESIGN.md#92-development). Section numbers below refer to DESIGN.md.
+Every slice of this phase is a vertical slice. What a slice is, its two kinds, its gate and what happens on a wrong spec are defined once, in [DESIGN §9.2](../DESIGN.md#92-development). Section numbers below refer to DESIGN.md.
 
 **The order is deliberate.** Slices 1.1 to 1.8 build a thin path from a plain text document to a cited answer, and end with the baseline that measures it. Slices 1.9 to 1.16 then add real documents and better ranking. Each of those changes what a model sees, so each is measured against that baseline at its gate.
 
@@ -15,8 +15,8 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 | 1.2 Embedding | `engine.ingest()` | Every chunk is stored with its vector | End-to-end | Not started |
 | 1.3 Search with predicates | `engine.retrieve()` | Each predicate, the as-of date included, excludes what it should before any candidate is scored; an exact string is found by full-text search | End-to-end | Not started |
 | 1.4 Sufficiency gate and evidence set | `engine.retrieve()` | Too little evidence stops the run and names what is missing | Unit and end-to-end | Not started |
-| 1.5 Run controls around the chat model | none (wrapper) | The budget, the model fallback and the retry after an invalid output work on any chat model, a fake included | Unit | Not started |
-| 1.6 First answer graph | `engine.answer()` | A question returns claims that each cite retrieved evidence, or a stop with its reason | End-to-end | Not started |
+| 1.5 First answer graph | `engine.answer()` | A question returns claims that each cite retrieved evidence, or a stop with its reason | End-to-end | Not started |
+| 1.6 Run controls around the chat model | `engine.answer()` | The budget, the model fallback and the retry after an invalid output act on any chat model, a fake included, and a run they stop ends with its reason | End-to-end | Not started |
 | 1.7 Run record and tracing | `engine.answer()` | Every run is stored in PostgreSQL and sent, masked, to Langfuse | End-to-end | Not started |
 | 1.8 Behaviour baseline | evaluation run | Each question has a baseline, and a later run is compared with it | Unit and evaluation | Not started |
 | **B. Real documents** | | | | |
@@ -59,18 +59,19 @@ What a slice is, its gate and what happens on a wrong spec are defined once, in 
 - **Rules:** §4 (modality normalisation makes the gate count candidates; "Every citation carries its dates"); §5 ("Hits keep their modality").
 - **Test:** unit for the gate, which is a control. End-to-end: a question the corpus can't answer stops with its reason; one it can answer returns hits with every field filled.
 
-### 1.5 Run controls around the chat model
+### 1.5 First answer graph
 
-- **Must hold:** one wrapper around any `BaseChatModel` counts model calls and cost against the run's `Budget`, switches to the fallback model on failure, and reports each call to the recorder. A structured output that fails its schema is asked for again with the error, up to `policy.max_validation_retries` times per model, and the run then stops with `invalid_output`. A failed call is retried as its failure class allows. The scripted chat model for tests exists and goes through it.
-- **Rules:** §5 ("`Budget`", "Model fallback", "A model output that fails its schema"); §4 ("Retries follow the failure class"); §8 ("Run controls wrap the chat model").
-- **Test:** unit. A scripted model that exceeds the call limit ends in `budget_exhausted`. A scripted primary that fails hands over to the fallback, and the switch is recorded. A scripted model that returns an invalid object, then a valid one, succeeds within the limit; one that never returns a valid one ends in `invalid_output`. A transient failure is retried and a refusal is not.
+- **Must hold:** `engine.answer(question, as_of)` retrieves, drafts a `Draft` of claims as structured output, and returns them with citations: source, anchor, dates, source-truth coefficient, and the as-of date in the footer. Every claim cites a retrieved chunk. The scripted chat model for tests exists, and the graph calls whichever chat model the context holds. The run controls around that model are not here: they arrive in slice 1.6. Nor is the provenance gate, which arrives in Phase 3.
+- **Rules:** §4 (as-of rules, "Every citation shows its source truth"); §5 (`draft_claims`, `RunResult`, `StopReason`); §7 (a claim's source is flat for the model, typed for the verifier); §8 (the chat model's fake is a scripted model).
+- **Test:** end-to-end with the scripted chat model. A scripted draft comes back with resolved citations. A claim citing a chunk that was not retrieved is rejected. Two questions asked at once each get their own answer and neither blocks the other.
 - **Rests on:** check 2 (passed).
 
-### 1.6 First answer graph
+### 1.6 Run controls around the chat model
 
-- **Must hold:** `engine.answer(question, as_of)` retrieves, drafts a `Draft` of claims as structured output, and returns them with citations: source, anchor, dates, source-truth coefficient, and the as-of date in the footer. Every claim cites a retrieved chunk. The provenance gate is not here; it arrives in Phase 3.
-- **Rules:** §4 (as-of rules, "Every citation shows its source truth"); §5 (`draft_claims`, `RunResult`, `StopReason`); §7 (a claim's source is flat for the model, typed for the verifier).
-- **Test:** end-to-end with the scripted chat model. A scripted draft comes back with resolved citations. A claim citing a chunk that was not retrieved is rejected. Two questions asked at once each get their own answer and neither blocks the other.
+- **Must hold:** one wrapper around any `BaseChatModel` counts model calls and cost against the run's `Budget`, switches to the fallback model on failure, and reports each call to the recorder. A structured output that fails its schema is asked for again with the error, up to `policy.max_validation_retries` times per model, and the run then stops with `invalid_output`. A failed call is retried as its failure class allows. The context holds the wrapped model, so the answer graph of slice 1.5 goes through the wrapper unchanged, and so does the scripted chat model.
+- **Rules:** §5 ("`Budget`", "Model fallback", "A model output that fails its schema"); §4 ("Retries follow the failure class"); §8 ("Run controls wrap the chat model").
+- **Test:** end-to-end at `engine.answer()` with the scripted chat model. A run whose model calls exceed the limit ends in `budget_exhausted`. A scripted primary that fails hands over to the fallback, the question is still answered, and the switch is recorded. A scripted model that returns an invalid `Draft`, then a valid one, answers within the limit; one that never returns a valid one ends in `invalid_output`. A transient failure is retried and a refusal is not.
+- **Rests on:** check 2 (passed) and slice 1.5.
 
 ### 1.7 Run record and tracing
 
