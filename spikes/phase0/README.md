@@ -10,7 +10,7 @@ Each script here proves or disproves one assumption the design rests on, before 
 
 ## Status
 
-Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 13 are not run. Check 13 must pass before slice 0.9; none of the other open checks blocks a Phase 0 slice.
+Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 14 are not run. Check 13 must pass before slice 0.9; none of the other open checks blocks a Phase 0 slice.
 
 ## Results
 
@@ -29,6 +29,7 @@ Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 13 are n
 | 11 | A masked trace and its scores reach Langfuse, tagged with the slice and the git commit | Langfuse keys | Not run | | The run record in PostgreSQL alone; Langfuse stays optional |
 | 12 | Ragas' `TestsetGenerator` produces usable questions from our documents through OpenRouter | OpenRouter key; needed at the start of Phase 4 | Not run | | DeepEval's `Synthesizer` |
 | 13 | LangGraph's Postgres checkpointer and store work beside our own stores: on psycopg 3, in their own schema, untouched by Alembic. A graph with a sub-graph and a run context resumes after its process is killed, without repeating a completed step. The store's semantic search runs at our embedding dimensions. A node timeout exists on our LangGraph version | The `postgres` container | Not run | | The run record's `run_steps` as the resume log, and tables of our own for preferences and run records; `asyncio.timeout` in a node wrapper |
+| 14 | The official MCP Python SDK can carry the TipRanks client: a tool call is never sent twice after a timeout or a dropped connection; a quota refusal reaches the caller as an error it can tell from any other; the handshake and the catalogue cost no metered call | A local fake MCP server for the first two; the network and the free usage counter for the third. No metered call | Not run | | Our own JSON-RPC calls over an HTTP client, as the 2026-10-03 check made with `curl` |
 
 ## What is left, in priority order
 
@@ -40,7 +41,8 @@ Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 13 are n
 | 4 | 11. A masked trace reaches Langfuse | Before slice 1.7. Needs the Langfuse keys in `.env` | Slice 1.7 is the first Phase 1 slice that waits on a check. A failure costs little: the run record is in PostgreSQL |
 | 5 | 9. Docling finds picture boxes on an image-only page | Before slice 1.13. Can run now that containers reach the GPU | The rule that keeps a model's reading of a picture out of the text rests on it (DESIGN §3) |
 | 6 | 7, the rest. Reranker and sentiment classifier, all four models loaded | Once the `models` image exists (slice 0.6), before slice 1.16 | Low risk: two models peak at 5.3 GB of 16 GB |
-| 7 | 12. Ragas generates questions | At the start of Phase 4 | Nothing needs it before the question set is generated |
+| 7 | 14. The MCP SDK under the TipRanks client | Before the first Phase 2 slice that fetches from a provider. Needs no key for two of its three parts | The client must never repeat a metered call (DESIGN §2), and the SDK's documentation says nothing about retries or about how a refusal surfaces |
+| 8 | 12. Ragas generates questions | At the start of Phase 4 | Nothing needs it before the question set is generated |
 
 ## Check 7a: Docling and LightOnOCR on the laptop GPU
 

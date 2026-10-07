@@ -84,7 +84,7 @@ Every slice of this phase is a substrate slice. What a slice is, its two kinds, 
 
 ## Assumption checks to close in this phase
 
-The scripts, their results and the reasons for the order below are in [spikes/phase0/README.md](../../spikes/phase0/README.md). Checks 1 to 6 and 7a have passed. Check 13 must pass before slice 0.9; none of the other open checks blocks a slice of this phase. Check 12 (Ragas) waits for Phase 4.
+The scripts, their results and the reasons for the order below are in [spikes/phase0/README.md](../../spikes/phase0/README.md). Checks 1 to 6 and 7a have passed. Check 13 must pass before slice 0.9; none of the other open checks blocks a slice of this phase. Check 12 (Ragas) waits for Phase 4, and check 14 (the MCP SDK under the TipRanks client) for the first Phase 2 slice that fetches from a provider.
 
 | Priority | Check | Needs | Blocks |
 |---|---|---|---|

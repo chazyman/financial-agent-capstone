@@ -164,7 +164,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ## Left to later phases
 
-- **Phase 2:** typed records with their basis and scope, prices, table verification, news and analyst ratings, the TipRanks sync step.
+- **Phase 2:** typed records with their basis and scope, prices, table verification, news, and analyst views from an optional provider, fetched on demand.
 - **Phase 3:** chart classification, series and captions; the provenance gate, with its number check.
 - **Phase 4:** generated questions and trajectory ranking.
-- **Phase 5:** the agents, the skills, the safety gates, the no-progress stop, sessions and long-term memory.
+- **Phase 5:** the agents, the skills and their typed scripts, the safety gates, the no-progress stop, sessions and long-term memory.
