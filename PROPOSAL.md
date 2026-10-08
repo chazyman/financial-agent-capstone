@@ -418,7 +418,7 @@ The loop is defined in [DESIGN §9.2](docs/DESIGN.md#92-development), and each p
 
 ## 7. Evaluation
 
-- **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1 (retrieval hit rate), then DeepEval's judged scores from Phase 4 on that set plus generated questions. The set includes questions that must not be answered, each labelled with the stop it must end in. Hard checks must pass; a judged score must not fall below its stored baseline.
+- **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1: retrieval hit rate first, then DeepEval's judged scores from the close of that phase. Generated questions join the set in Phase 4. The set includes questions that must not be answered, each labelled with the stop it must end in. Hard checks must pass; a judged score must not fall below its stored baseline.
 - **Grounding:** every numeric claim traces to a chunk, table cell or record; a forged chart-number claim is blocked, and so is a figure that is not in the source it cites.
 - **Behaviour shift:** each question keeps a baseline of its evidence, path, scores, time and cost. A later run is compared with it, and a shift nobody intended blocks the slice or the phase.
 - **Traceability:** every run has a stored record, and replaying it after a refresh reports which sources changed.

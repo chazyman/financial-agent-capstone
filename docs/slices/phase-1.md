@@ -129,10 +129,10 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.14 Acquisition without an agent
 
-- **Must hold:** `engine.refresh()` resolves the configured sources of one equity and one ETF from `config/sources.yaml`, fetches their documents through the `HttpFetcher` interface, drops repeats by content hash, and ingests the rest. A URL outside the permitted domains is refused, and so is a page or a file over its size cap, of which nothing is stored. `engine.ingest(path, ticker, source)` ingests a supplied file with its source, such as an analyst report PDF.
-- **Rules:** §2 ("Where sources live", "Only permitted sources are fetched", "A fetch has a size cap", the download and supplied-file paths); §4 (the source's truth coefficient is resolved from config, never stored on a chunk).
-- **Test:** end-to-end with the fake fetcher. The same document fetched twice is stored once. A supplied file carries its declared source. A fetch from a domain that is not permitted raises `ToolDenied`. So does a response longer than its cap, and it leaves no file. A `network` test fetches one real filing and one real fund document.
-- **Rests on:** check 8, which also records the sizes the two caps are set from.
+- **Must hold:** `engine.refresh()` resolves the configured sources of one equity and one ETF from `config/sources.yaml`, fetches their documents through the `HttpFetcher` interface, drops repeats by content hash, and ingests the rest. A URL outside the permitted domains is refused. `engine.ingest(path, ticker, source)` ingests a supplied file with its source, such as an analyst report PDF.
+- **Rules:** §2 ("Where sources live", "Only permitted sources are fetched", the download and supplied-file paths); §4 (the source's truth coefficient is resolved from config, never stored on a chunk).
+- **Test:** end-to-end with the fake fetcher. The same document fetched twice is stored once. A supplied file carries its declared source. A fetch from a domain that is not permitted raises `ToolDenied`. A `network` test fetches one real filing and one real fund document.
+- **Rests on:** check 8.
 
 ### 1.15 A refresh never destroys
 

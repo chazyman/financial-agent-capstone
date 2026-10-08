@@ -55,8 +55,6 @@ Four acquisition paths:
 
 **Only permitted sources are fetched.** `fetch_document` and `scrape_page` refuse a URL whose domain is not in `config/sources.yaml` (the catalog's own domains plus `permitted_domains`, §10) with a `ToolDenied`. `search_web` drops results from other domains and counts them. The `source-selection` skill explains the rule; the tools enforce it.
 
-**A fetch has a size cap.** A page is read up to `scraping.max_page_bytes` and a file up to `scraping.max_file_bytes` (§10). The fetcher stops reading at the cap, and `fetch_document`, `scrape_page` and `fetch_news` then refuse the item with a `ToolDenied` and count it. Nothing partial is saved or ingested: a document cut short would look complete to retrieval. The course's swarm notebook cuts a scraped page to protect a model's context (Day 4). Here fetched content never reaches a model at acquisition (above), so the cap protects ingestion, and it refuses where the notebook cuts. Both values are set from the sizes that check 8 records (`spikes/phase0`).
-
 ### Providers of analyst views
 
 Analyst data comes from optional providers. A provider is switched on in the settings (`providers.<name>.enabled`, §10), supplies some kinds of analyst view, and enriches what Market Intelligence can report (§6). With no provider enabled the engine still runs: every analyst view is marked unavailable, and an answer says so. TipRanks is the one provider the capstone builds. It needs a paid subscription, so it is off in the committed settings.
@@ -158,7 +156,7 @@ These are the rules behind the retrieval diagram (PROPOSAL §4.2).
   - `not_found`: the corpus holds no record of any metric for that instrument and period at the as-of date, so the period was never ingested;
   - `not_stated`: it holds records for that period, and none of them is this metric.
 
-  The reason travels with what is missing in the `EvidenceSet` (§5), and the answer repeats it. These are the course's three empty findings (Day 1), which names the third "not disclosed". Here it is worded "not in the documents ingested for that period": the engine can show what its documents hold, and can't show that a company never disclosed a figure. Nothing is stored for a missing figure, because an empty row would be a parser asserting a negative it can't prove.
+  When the brief asks for an exact figure, the reason is carried in the `EvidenceSet` (§5) whether or not the sufficiency gate passes, and the answer repeats it. The reason describes the typed records only: hybrid search may still find the figure printed in a text chunk, and the draft may then quote it from that chunk under the provenance rule (below). These are the course's three empty findings (Day 1), which names the third "not disclosed". Here it is worded "no record of that metric was extracted for that period": the engine can show what its records hold, and can't show that a document never printed a figure or that a company never disclosed it. How the reason reaches the draft is looked at again when Phase 2 is sliced (§9.3). Nothing is stored for a missing figure, because an empty row would be a parser asserting a negative it can't prove.
 - **The drafter sees the image of a chart.** Text and table hits reach the drafting step as text or Markdown. A hit whose kind is listed in `drafting.include_crops` (charts and pictures) also sends its crop, downscaled to `drafting.crop_max_side`, so a claim about shape is made from the image and not only from a caption written before the question was known. The provenance rule below is unchanged: a number read off that crop is a magnitude claim citing an un-checkable source, and is blocked. The primary and fallback models must therefore accept images.
 - **The provenance rule.** A claim that states a number must cite a checkable source: a chunk with a second possible source (`docling_text`, `docling_table` or `lighton_ocr`) or a typed record (`record_ref`, §7). A chart may support a claim about **shape**, never about **magnitude**. Text printed in a chart is a separate text chunk and follows the text rule (§3). The model's own `magnitude` / `shape` label is cross-checked by scanning the claim text for numbers.
 - **The number itself is checked.** Citing a checkable source is not enough: every figure in a magnitude claim must be found in the source it cites. For a chunk, the figure must appear in the chunk's representation. For a typed record, it must equal the record's value, or appear in its text when the record is an analyst note (§6). For a figure the engine computed, the claim cites the calculation (§5, §7) and must equal its result. Both sides are normalised in code before they are compared (thousands separators, parentheses, percent signs, scale words), and compared to the precision the claim states. Period labels and dates are not figures. A claim whose number is not in its source is blocked like any other provenance failure.
@@ -225,15 +223,15 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | Tool | What it does | Returns | Backing module | Used by |
 |---|---|---|---|---|
 | `search_web(query, since)` | Exa search for public documents and pages; returns candidate URLs with titles and dates. Results are untrusted data and become citable only after ingestion | `list[SearchResult]` | acquisition | Data Aggregator, directly |
-| `fetch_document(source)` | Follow a page's download link, or fetch a configured source URL; save the PDF/CSV/XLSX/JSON and return its receipt (§2). Refuses a domain that is not permitted and a file over the size cap | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
-| `scrape_page(url)` | Pull public page content when there is no downloadable file; same receipt, same domain rule, and the page's size cap | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
+| `fetch_document(source)` | Follow a page's download link, or fetch a configured source URL; save the PDF/CSV/XLSX/JSON and return its receipt (§2). Refuses a domain that is not permitted | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
+| `scrape_page(url)` | Pull public page content when there is no downloadable file; same receipt, same domain rule | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
 | `tipranks_snapshot(tickers)` | One batched call to the server's `get_assets_data` for the whole universe: the consensus label and price target as TipRanks computes them, for equities and ETFs, with the next earnings date it reports (§2) | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_ratings(ticker)` | The server's `get_recent_analyst_ratings`, one call per equity: the trailing twelve months of analysts' rating actions | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_ai_analysis(ticker)` | The server's `get_ai_stock_analysis` in full detail, one call per equity: the six model ratings, each with its score, rating, price target and date | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_bulls_bears(tickers)` | The server's `get_bulls_bears_summary`, one batched call: the bull and bear points of each stock, each tagged with a topic | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_catalyst(tickers)` | The server's `get_stock_catalyst`, one batched call: TipRanks' summary of why each stock is moving | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_fetch(kinds, tickers)` | Run the TipRanks fetch as a whole (§2): for each kind named, skip what is fresh in the cache, stop at the quota reserve, call that kind's tool above once, validate the answer and hand the rows to ingestion. Refused for a past as-of date | `FetchReceipt` | acquisition | TipRanks agent, directly; `engine.refresh()` before Phase 5 |
-| `fetch_news(ticker, since)` | Collect candidate news articles and press releases for a ticker since a date; an article over the page's size cap is refused (§2) | `list[AcquiredItem]` | acquisition | `acquire` (Data Aggregator) |
+| `fetch_news(ticker, since)` | Collect candidate news articles and press releases for a ticker since a date | `list[AcquiredItem]` | acquisition | `acquire` (Data Aggregator) |
 | `ingest(items)` | Run the ingestion sub-graph on acquired items, named by the ids on their receipts, or on a supplied file (§2): inline for the `staleness.inline` types (the answer waits), queued to the worker for documents | `IngestReport` | acquisition | `acquire` (Data Aggregator) |
 | `parse_document(file)` | Docling conversion (via the `models` service, §9) into typed elements with page, bbox, associated caption and Docling's picture class; returns Markdown, JSON and the crops for the `ArtifactStore` to write (§3) | `ParsedDocument` | parsing | Ingestion sub-graph |
 | `route_ocr(doc)` | Count the text-layer characters of every page, including empty ones; send a page to LightOnOCR-2-1B on the `models` service when it is below `parsing.ocr_min_chars` and mostly covered by a raster image, with its picture boxes masked (§3) | `ParsedDocument` | parsing | Ingestion sub-graph |
@@ -248,7 +246,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | `classify_news(item)` | Tag event type and sentiment (financial-phrasebank classifier on the `models` service, §9) | `NewsClassification` | news | Ingestion sub-graph |
 | `extract_records(parsed_doc)` | Turn XBRL facts, table cells, CSV rows and ratings into typed rows, carrying extraction method and verification status | `RecordBatch` | extraction | Ingestion sub-graph |
 | `embed(items)` | Joint text + image embedding via Gemini Embedding 2 on OpenRouter (`openrouter.data_collection: deny`) | `list[Embedding]` | embedding | Ingestion sub-graph |
-| `retrieve(sub_query, predicates)` | Run the retrieval sub-graph (PROPOSAL §4.2 ①–⑤) as a whole and return an `EvidenceSet`: the chunks and records that survived, or what is missing when the sufficiency gate fails. At most `1 + retrieval.max_query_rewrites` calls per brief; further calls are refused. The Researcher's model sees it as hit cards (below) | `EvidenceSet` | retrieval | Researcher, directly |
+| `retrieve(sub_query, predicates)` | Run the retrieval sub-graph (PROPOSAL §4.2 ①–⑤) as a whole and return an `EvidenceSet`: the chunks and records that survived, or what is missing when the sufficiency gate fails. When an exact figure is asked for and has no record, it also carries the reason (§4), whether or not the gate passes. At most `1 + retrieval.max_query_rewrites` calls per brief; further calls are refused. The Researcher's model sees it as hit cards (below) | `EvidenceSet` | retrieval | Researcher, directly |
 | `search(query, predicates, k)` | Predicates (ticker, doc type, filing Item or section, as-of/date window, `require_checkable`, the source-truth floor; `injection_suspect` chunks always excluded) as `WHERE`; then two candidate lists over what is left, by vector similarity and by full-text search (§4); then modality normalisation of the vector scores | `list[Hit]` | retrieval | Retrieval sub-graph |
 | `record_lookup(filters)` | Exact lookup of typed records (`financial_facts`, `prices`): one per metric and period among those known at the as-of date, chosen by source truth, with the records that corroborate or disagree attached (§4). Each is returned with its `record_ref`. A metric and period with no record is returned with its reason: not applicable, not found or not stated (§4) | `RecordLookup` | retrieval | Retrieval sub-graph; `verify_claim` |
 | `rerank(query, candidates)` | Qwen3-VL-Reranker-2B on the `models` service, one document at a time: crop for visual chunks, text for prose; falls back to text, then to retrieval order. Each score is then weighed by source truth (§4) | `list[Hit]` | retrieval | Retrieval sub-graph |
@@ -302,7 +300,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 |---|---|---|
 | Data Aggregator | `AcquisitionBrief`: tickers and the stale data types from `check_freshness` | `AcquisitionReport`: what was ingested inline, what was queued, what failed |
 | TipRanks agent | `ViewsBrief`: tickers and the analyst views `check_freshness` found stale or missing | `FetchReport`: for each kind, whether it was fetched, served from the cache or skipped at the quota reserve; the dates covered; the metered calls used and left |
-| Researcher | `ResearchBrief`: sub-query, tickers, as-of date, whether an exact figure is needed | `EvidenceSet`: the chunks and records that survived retrieval, each tagged CHECKABLE or ESTIMATED, or what is missing, with the reason for a missing figure (§4) |
+| Researcher | `ResearchBrief`: sub-query, tickers, as-of date, whether an exact figure is needed | `EvidenceSet`: the chunks and records that survived retrieval, each tagged CHECKABLE or ESTIMATED, or what is missing; in both cases, the reason for a missing figure (§4) |
 | Market Intelligence | `NewsBrief`: tickers, as-of date, date window, event types, the analyst views wanted | `NewsDigest` (§6) |
 | Financial Analyst | `AnalysisBrief`: the question, the as-of date, every `EvidenceSet` and `NewsDigest` collected, whether an exact figure is needed, the user's preferences (§13); on a redraft, the failure reason | `Draft` |
 
@@ -998,8 +996,6 @@ policy:
 
 scraping:
   requests_per_minute: 20
-  max_page_bytes:                   # a page or a news article; over it the fetch is refused (§2). Both caps are required,
-  max_file_bytes:                   # and are set from the sizes check 8 records, before slice 1.14
 
 timeouts:                    # seconds, on every outside call (§4)
   model: 60
@@ -1188,7 +1184,8 @@ source_truth:                # 1-10: how far a figure from this source can be tr
 - **Missing figures (Phase 2+)**, the rule of §4:
   - A metric listed for another instrument type is reported `not_applicable`; a period with no record at all, `not_found`; a period with records and none for the metric, `not_stated`.
   - A period whose records were all filed after the as-of date is `not_found`.
-  - The answer repeats the reason, and words `not_stated` as "not in the documents ingested for that period".
+  - The answer repeats the reason, and words `not_stated` as "no record of that metric was extracted for that period".
+  - The reason is in the `EvidenceSet` when the sufficiency gate passes on text chunks alone, and a figure printed in one of those chunks can still be quoted.
 - **As-of date (Phase 1+)**, the rules of §4:
   - A document published after the as-of date is not retrieved, and a fact filed after it is not returned by `record_lookup`.
   - With an as-of date before a restatement, the original value is returned; as of today, the restated one.
@@ -1239,7 +1236,6 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   - A draft that fails provenance twice stops with its reason.
   - `check_safety`'s rules are unit-tested on known injection patterns, without the guard model.
   - A URL outside the permitted domains is refused by `fetch_document` and `scrape_page`, and a search result from one is dropped and counted.
-  - A page or a file over its size cap is refused and counted, and nothing of it is stored (tested from Phase 1, with the first acquisition slice).
   - No TipRanks payload appears in a model call of the TipRanks agent: its window holds the fetch receipt only.
 - **Skills, scripts and the gateway (Phase 5)**, the rules of §5:
   - A model that calls a tool sitting behind a script is refused. A script that calls a tool its skill did not declare is refused. A skill that declares a control stops the build.
