@@ -296,7 +296,7 @@ Full rules: [DESIGN §4](docs/DESIGN.md#4-retrieval-and-verification-rules).
 
 Phase 5 wraps the pipelines of Phases 1–4 as sub-agents under a supervisor; nothing built earlier is replaced.
 
-- **Supervisor**: plans the work. One model call scopes the question and returns a typed plan: which sub-agents run, in what order, and whether an exact figure is needed. Code then walks that plan: it refreshes stale data, hands each sub-agent its task and collects the result, so no model chooses the next agent. It does not run the guardrails itself: every answer passes through the gates below on its way through the graph.
+- **Supervisor**: plans the work. One model call scopes the question and returns a typed plan: which sub-agents run, in what order, and whether an exact figure is needed. Code then walks that plan: it refreshes stale data, hands each sub-agent its task and collects the result, so no model chooses the next agent. A question about an instrument outside the universe, or one too unclear to plan, stops there with its reason, before anything is retrieved. It does not run the guardrails itself: every answer passes through the gates below on its way through the graph.
 - **Data Aggregator**: decides *what to acquire*, meaning which sources to fetch and which web searches to run for an instrument, then hands everything to the deterministic ingestion sub-graph (4.1), which is the only writer to the corpus.
 - **TipRanks agent** (optional): fetches the analyst views a question needs from the TipRanks server, when that provider is switched on and the cached copy is stale or missing. It triggers one fetch and reads back a receipt; the data goes to the corpus, not to a model.
 - **Researcher**: turns a sub-query into predicates and runs the retrieval sub-graph over filings, fund documents and fundamentals (4.2 ①–⑤). The sub-graph runs as a whole, so its sufficiency gate can't be skipped. When the gate fails, the Researcher retries with a new query, up to `retrieval.max_query_rewrites` times, then reports what is missing.
@@ -326,6 +326,7 @@ flowchart TD
     U --> IG
     IG -->|pass| S
     IG -->|fail| STOP
+    S -->|"outside the universe,<br/>or unclear"| STOP
     S -- stale data --> DA --> ING --> S
     S -- stale analyst views --> TA --> ING
     S --> R --> S
@@ -340,6 +341,8 @@ Each sub-agent is an LLM loop that holds **skills**. A skill offers typed **scri
 - **Tools** are typed Python functions. Every control is one, including the checks the gates run, and no skill may offer a control.
 - **Scripts** are typed procedures: a fixed chain of tool calls that a model starts with one call. The tools behind a script never appear in a prompt.
 - **Skills** are folders with a `SKILL.md`, scripts and references. Each is validated before the agents are built, and its instructions are loaded on demand.
+
+A sub-agent's own instructions are a file in five fixed sections (role, conventions, skills, never, escalate to), validated the same way.
 
 **An agent's context holds only what it must judge.** Whatever a model calls returns a bounded, typed result, and the full result goes to the graph state. Each agent's context is measured by component and capped.
 
@@ -375,14 +378,12 @@ The stored trajectories and scores also leave the door open to a self-improving 
 
 Each phase ships a demo notebook backed by tested engine code, so the project stays runnable at every step. Six notebooks are the deliverable; exploration notebooks are throwaway and not part of it. How each phase is built is in Section 6.
 
-| Phase | Delivers | Notebooks |
-|---|---|---|
-| 0. Environment | WSL2 + Docker Engine with the NVIDIA Container Toolkit, so containers see the GPU; compose services (postgres + pgvector, redis, worker, models); LightOnOCR running on the laptop's GPU in the `models` service; `uv` lockfile and environment with a Jupyter kernel; durable runs through the PostgreSQL checkpointer; Langfuse Cloud keys; risk checks as isolated scripts (`spikes/phase0`) before any code depends on them: OpenRouter embeds images with Gemini Embedding 2, the four GPU models fit in 16 GB, and the Stooq, Stockanalysis and SPDR downloads work within their terms. The TipRanks MCP check was done in October 2026 ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)) | — |
-| 1. Multimodal RAG | Corpus download; the deterministic ingestion sub-graph (Docling parsing with OCR fallback, chunks with full metadata, joint text + image embeddings); filtered, hybrid, reranked retrieval; a first answer graph run from a notebook; a stored run record and a Langfuse trace for every graph run (4.5); a hand-labelled QA set with a retrieval hit-rate check and a first behaviour baseline per question (evidence, path, judged scores, time and cost); an analyst report PDF as the sample for Docling's layout handling and a rasterised filing as the sample for LightOnOCR | `01_ingestion`, `02_retrieval` |
-| 2. Structured extraction | SEC XBRL facts and table cells → typed records, tables verified by agreement; one ticker key across all sources; news as timestamped records, and analyst views from an optional provider, fetched on demand; one year of daily prices and the deterministic trend tools (price, consensus, news over 1w/1m/3m); scheduled refresh in the worker | `03_structured_extraction` |
-| 3. Charts + provenance | Chart classification, JSON estimates and captions; chart checks against filings data; the provenance gate (draft → `verify_claims` → one redraft) as a reusable sub-graph, with its number check, proven by blocking a forged chart-number claim | `04_charts_provenance` |
-| 4. Evaluation | The QA set extended with questions generated with Ragas and re-run on the Phase 1–3 graphs; hard checks and DeepEval's judged scores, each stored with its run, compared with its baseline and shown in Langfuse; trajectory ranking of the answer graph's paths (sufficiency stop, redraft) | `05_evaluation` |
-| 5. Multi-agent + hardening | Supervisor and sub-agents (4.3) wrapping the Phase 1–4 pipelines; the skill loader and the 6 skills with their typed scripts; agentic acquisition, with an optional TipRanks agent; session memory and the long-term store; input and output guardrail gates and ingestion screening; trajectory evaluation of the agents; model fallback and a per-query cost cap | `06_multi_agent` (the capstone demo) |
+- **Phase 0. Environment.** The WSL2 and Docker environment, the four services, the engine's empty shell, durable runs and the assumption checks. No notebook. Rules: [DESIGN §9](docs/DESIGN.md#9-runtime-and-infrastructure). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-0-environment).
+- **Phase 1. Multimodal RAG.** Ingestion of real documents, filtered and reranked retrieval, a first cited answer, the run record and a behaviour baseline. Notebooks `01_ingestion` and `02_retrieval`. Rules: [DESIGN §3](docs/DESIGN.md#3-ingestion-rules) and [§4](docs/DESIGN.md#4-retrieval-and-verification-rules). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-1-multimodal-rag).
+- **Phase 2. Structured extraction.** Typed records from filings data, tables and CSVs, table verification, prices and trends, news, and analyst views from an optional provider. Notebook `03_structured_extraction`. Rules: [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow) and [§7](docs/DESIGN.md#7-data-model). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-2-structured-extraction).
+- **Phase 3. Charts and provenance.** Chart reading as estimates, and the provenance gate that blocks a forged chart number. Notebook `04_charts_provenance`. Rules: [DESIGN §4](docs/DESIGN.md#4-retrieval-and-verification-rules). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-3-charts-and-provenance).
+- **Phase 4. Evaluation.** A wider question set, scores compared with stored baselines, and trajectory ranking. Notebook `05_evaluation`. Rules: [DESIGN §11](docs/DESIGN.md#11-evaluation-checks-in-detail). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-4-evaluation).
+- **Phase 5. Multi-agent and hardening.** The supervisor, sub-agents, skills, memory and safety gates around the Phase 1–4 pipelines. Notebook `06_multi_agent`, the capstone demo. Rules: [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills) and [§13](docs/DESIGN.md#13-memory-and-durable-runs). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-5-multi-agent-and-hardening).
 
 ## 6. Project Development loop
 
@@ -417,7 +418,7 @@ The loop is defined in [DESIGN §9.2](docs/DESIGN.md#92-development), and each p
 
 ## 7. Evaluation
 
-- **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1 (retrieval hit rate), then DeepEval's judged scores from Phase 4 on that set plus generated questions. Hard checks must pass; a judged score must not fall below its stored baseline.
+- **Retrieval and answer quality:** a hand-labelled QA set scored from Phase 1 (retrieval hit rate), then DeepEval's judged scores from Phase 4 on that set plus generated questions. The set includes questions that must not be answered, each labelled with the stop it must end in. Hard checks must pass; a judged score must not fall below its stored baseline.
 - **Grounding:** every numeric claim traces to a chunk, table cell or record; a forged chart-number claim is blocked, and so is a figure that is not in the source it cites.
 - **Behaviour shift:** each question keeps a baseline of its evidence, path, scores, time and cost. A later run is compared with it, and a shift nobody intended blocks the slice or the phase.
 - **Traceability:** every run has a stored record, and replaying it after a refresh reports which sources changed.

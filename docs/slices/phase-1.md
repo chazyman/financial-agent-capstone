@@ -82,9 +82,9 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 
 ### 1.8 Behaviour baseline
 
-- **Must hold:** a hand-labelled question set exists: question, as-of date, expected chunk, expected answer, nothing from TipRanks. An evaluation run scores each case: retrieval hit, hard checks, evidence, path, response time, tokens, cost, and DeepEval's judged scores. The run accepted at a gate becomes the case's baseline. A later run produces a shift report against it, and the scores are mirrored to Langfuse.
-- **Rules:** §11 ("Retrieval and answer quality", "Behaviour shift"); §12.1 (`case_id`, the baseline, `run_scores`).
-- **Test:** unit, on stored runs. A changed evidence set, a changed path, a slower run and a lower judged score are each reported as a shift. A drop within the tolerance is not. An intended shift, once accepted, becomes the baseline.
+- **Must hold:** a hand-labelled question set exists: question, as-of date, expected chunk, expected answer, nothing from TipRanks. Some cases carry no expected answer and the stop reason they must end in, here `insufficient_evidence`. An evaluation run scores each case: retrieval hit, hard checks, evidence, path, response time, tokens, cost, and DeepEval's judged scores. The run accepted at a gate becomes the case's baseline. A later run produces a shift report against it, and the scores are mirrored to Langfuse.
+- **Rules:** §11 ("Retrieval and answer quality", "Questions that must not be answered", "Behaviour shift"); §12.1 (`case_id`, the baseline, `run_scores`).
+- **Test:** unit, on stored runs. A changed evidence set, a changed path, a slower run and a lower judged score are each reported as a shift. A case that was answered when it had to stop fails its hard check, and so does one that stopped when it had an answer; both rates are reported. A drop within the tolerance is not. An intended shift, once accepted, becomes the baseline.
 - **Evaluation run at its gate:** yes. It sets the first baseline, on the thin text path.
 - **Rests on:** check 6 (passed).
 
@@ -104,9 +104,9 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.10 Text chunks under their heading path
 
-- **Must hold:** a text chunk is a heading plus the text under it, up to `chunking.max_chars`. A longer section is cut at paragraph boundaries, and every piece repeats its heading. Heading levels are inferred in code and stored as a path in `section`, and the embedded text starts with that path. A deck is chunked per slide. A filing chunk carries its Item in `filing_item`. A footnote is attached to the chunk that carries its marker. Page furniture is dropped. Text is NFKC-normalised and unmapped characters are repaired or counted.
-- **Rules:** §3 ("Text chunks follow headings", "A long section is cut at paragraphs", "A deck is chunked per slide", "A filing chunk knows its Item", "A footnote stays with what it qualifies", "Furniture is not content", "Text is normalised and its damage is counted").
-- **Test:** unit for each rule. End-to-end on the fixture: a card under a column heading keeps that heading in its path; a long section gives pieces that each carry the path; a footnote sits with its paragraph; no header or footer line is a chunk; the counts in `ingest_runs` match.
+- **Must hold:** a text chunk is a heading plus the text under it, up to `chunking.max_chars`. A longer section is cut at paragraph boundaries, and every piece repeats its heading. Heading levels are inferred in code and stored as a path in `section`, and the embedded text starts with that path. A deck is chunked per slide. A filing chunk carries its Item in `filing_item`. A footnote is attached to the chunk that carries its marker. Page furniture is dropped. Text is NFKC-normalised and unmapped characters are repaired or counted. `ingest_runs` records the sizes of the chunks by kind, and how many were cut at the limit.
+- **Rules:** §3 ("Text chunks follow headings", "A long section is cut at paragraphs", "A deck is chunked per slide", "A filing chunk knows its Item", "A footnote stays with what it qualifies", "Furniture is not content", "Text is normalised and its damage is counted"); §12.2 (chunk sizes).
+- **Test:** unit for each rule. End-to-end on the fixture: a card under a column heading keeps that heading in its path; a long section gives pieces that each carry the path; a footnote sits with its paragraph; no header or footer line is a chunk; the counts and the chunk sizes in `ingest_runs` match the stored chunks.
 
 ### 1.11 Tables
 
@@ -129,10 +129,10 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.14 Acquisition without an agent
 
-- **Must hold:** `engine.refresh()` resolves the configured sources of one equity and one ETF from `config/sources.yaml`, fetches their documents through the `HttpFetcher` interface, drops repeats by content hash, and ingests the rest. A URL outside the permitted domains is refused. `engine.ingest(path, ticker, source)` ingests a supplied file with its source, such as an analyst report PDF.
-- **Rules:** §2 ("Where sources live", "Only permitted sources are fetched", the download and supplied-file paths); §4 (the source's truth coefficient is resolved from config, never stored on a chunk).
-- **Test:** end-to-end with the fake fetcher. The same document fetched twice is stored once. A supplied file carries its declared source. A fetch from a domain that is not permitted raises `ToolDenied`. A `network` test fetches one real filing and one real fund document.
-- **Rests on:** check 8.
+- **Must hold:** `engine.refresh()` resolves the configured sources of one equity and one ETF from `config/sources.yaml`, fetches their documents through the `HttpFetcher` interface, drops repeats by content hash, and ingests the rest. A URL outside the permitted domains is refused, and so is a page or a file over its size cap, of which nothing is stored. `engine.ingest(path, ticker, source)` ingests a supplied file with its source, such as an analyst report PDF.
+- **Rules:** §2 ("Where sources live", "Only permitted sources are fetched", "A fetch has a size cap", the download and supplied-file paths); §4 (the source's truth coefficient is resolved from config, never stored on a chunk).
+- **Test:** end-to-end with the fake fetcher. The same document fetched twice is stored once. A supplied file carries its declared source. A fetch from a domain that is not permitted raises `ToolDenied`. So does a response longer than its cap, and it leaves no file. A `network` test fetches one real filing and one real fund document.
+- **Rests on:** check 8, which also records the sizes the two caps are set from.
 
 ### 1.15 A refresh never destroys
 
@@ -164,7 +164,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ## Left to later phases
 
-- **Phase 2:** typed records with their basis and scope, prices, table verification, news, and analyst views from an optional provider, fetched on demand.
+- **Phase 2:** typed records with their basis and scope, the reason a figure is missing, prices, table verification, news, and analyst views from an optional provider, fetched on demand.
 - **Phase 3:** chart classification, series and captions; the provenance gate, with its number check.
 - **Phase 4:** generated questions and trajectory ranking.
-- **Phase 5:** the agents, the skills and their typed scripts, the safety gates, the no-progress stop, sessions and long-term memory.
+- **Phase 5:** the agents with their instructions files, the skills and their typed scripts, the stop on a question outside the universe or too unclear to plan, the safety gates, the no-progress stop, sessions and long-term memory.

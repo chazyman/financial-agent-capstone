@@ -55,6 +55,8 @@ Four acquisition paths:
 
 **Only permitted sources are fetched.** `fetch_document` and `scrape_page` refuse a URL whose domain is not in `config/sources.yaml` (the catalog's own domains plus `permitted_domains`, §10) with a `ToolDenied`. `search_web` drops results from other domains and counts them. The `source-selection` skill explains the rule; the tools enforce it.
 
+**A fetch has a size cap.** A page is read up to `scraping.max_page_bytes` and a file up to `scraping.max_file_bytes` (§10). The fetcher stops reading at the cap, and `fetch_document`, `scrape_page` and `fetch_news` then refuse the item with a `ToolDenied` and count it. Nothing partial is saved or ingested: a document cut short would look complete to retrieval. The course's swarm notebook cuts a scraped page to protect a model's context (Day 4). Here fetched content never reaches a model at acquisition (above), so the cap protects ingestion, and it refuses where the notebook cuts. Both values are set from the sizes that check 8 records (`spikes/phase0`).
+
 ### Providers of analyst views
 
 Analyst data comes from optional providers. A provider is switched on in the settings (`providers.<name>.enabled`, §10), supplies some kinds of analyst view, and enriches what Market Intelligence can report (§6). With no provider enabled the engine still runs: every analyst view is marked unavailable, and an answer says so. TipRanks is the one provider the capstone builds. It needs a paid subscription, so it is off in the committed settings.
@@ -151,6 +153,12 @@ These are the rules behind the retrieval diagram (PROPOSAL §4.2).
 - **Source truth is not extraction reliability.** `confidence` and `verification_status` say how well an element was read; source truth says how far its publisher can be trusted. A table from a third-party report can be read perfectly and still be wrong, so neither is folded into the other.
 - **Typed records skip ranking.** `record_lookup` results are exact matches, not similarity results. They join the evidence next to the reranked chunks and count toward the sufficiency gate.
 - **Records have precedence.** Because records skip ranking, the coefficient can't reach them there. When `record_lookup` finds the same metric and period, on the same basis and scope (§7), from several sources, it returns the record from the source with the highest source truth; a tie goes to an `agreed` record, then to the one known most recently at the as-of date (below). The others are attached to it as corroborating, or as disagreeing when they differ by more than `records.agreement_tolerance`. A disagreement is shown in the answer, never resolved silently, as for news claims (§6).
+- **A missing figure has a reason.** When `record_lookup` finds no record for a metric and period, code says why, from what the corpus holds:
+  - `not_applicable`: the metric belongs to another instrument type and not to this one (`records.metrics_by_type`, §10), such as earnings per share for an ETF;
+  - `not_found`: the corpus holds no record of any metric for that instrument and period at the as-of date, so the period was never ingested;
+  - `not_stated`: it holds records for that period, and none of them is this metric.
+
+  The reason travels with what is missing in the `EvidenceSet` (§5), and the answer repeats it. These are the course's three empty findings (Day 1), which names the third "not disclosed". Here it is worded "not in the documents ingested for that period": the engine can show what its documents hold, and can't show that a company never disclosed a figure. Nothing is stored for a missing figure, because an empty row would be a parser asserting a negative it can't prove.
 - **The drafter sees the image of a chart.** Text and table hits reach the drafting step as text or Markdown. A hit whose kind is listed in `drafting.include_crops` (charts and pictures) also sends its crop, downscaled to `drafting.crop_max_side`, so a claim about shape is made from the image and not only from a caption written before the question was known. The provenance rule below is unchanged: a number read off that crop is a magnitude claim citing an un-checkable source, and is blocked. The primary and fallback models must therefore accept images.
 - **The provenance rule.** A claim that states a number must cite a checkable source: a chunk with a second possible source (`docling_text`, `docling_table` or `lighton_ocr`) or a typed record (`record_ref`, §7). A chart may support a claim about **shape**, never about **magnitude**. Text printed in a chart is a separate text chunk and follows the text rule (§3). The model's own `magnitude` / `shape` label is cross-checked by scanning the claim text for numbers.
 - **The number itself is checked.** Citing a checkable source is not enough: every figure in a magnitude claim must be found in the source it cites. For a chunk, the figure must appear in the chunk's representation. For a typed record, it must equal the record's value, or appear in its text when the record is an analyst note (§6). For a figure the engine computed, the claim cites the calculation (§5, §7) and must equal its result. Both sides are normalised in code before they are compared (thousands separators, parentheses, percent signs, scale words), and compared to the precision the claim states. Period labels and dates are not figures. A claim whose number is not in its source is blocked like any other provenance failure.
@@ -185,6 +193,14 @@ The course's harness separates **state / skills / tools / policy** (Day 1, reinf
 
 Every sub-agent is an LLM loop plus the skills it holds. It is declared as a frozen `AgentSpec` in `agents/registry.py` (name, prompt, skills, model, step limit, brief and artifact types, and the setting that enables it, if any) and built by one factory, `make_agent_node` in `agents/factory.py`. Adding a sub-agent means adding a spec, not writing a graph. The Supervisor is not a loop (see "The Supervisor plans" below). The agents' purposes are in PROPOSAL §4.3. Phase 5 wraps the Phase 1–4 pipelines rather than replacing them: the Data Aggregator's `acquire` script hands acquired files to the ingestion sub-graph, the Researcher runs the retrieval sub-graph with `retrieve`, and the TipRanks agent runs the provider fetch with `tipranks_fetch` (§2). Each pipeline runs as a whole; no agent can call its inner steps.
 
+**A sub-agent's instructions are a file with a fixed form.** The prompt an `AgentSpec` names is one Markdown file in `prompts/agents/`, written in the five sections the course gives an AGENTS.md (Day 1): Role, Conventions, Skills, Never, Escalate to.
+- **Skills replaces the course's Tools,** since an agent holds skills and nothing else. It is the one section not written by hand: the factory builds it from the `AgentSpec`, with each skill's name, description and actions (below), so the file can't name a skill the agent does not hold.
+- **"Escalate to" names a stop,** not a person, because no approval step exists: a `StopReason`, or the artifact field a condition is reported in, as in a skill's failure modes.
+- **It is validated at the build.** The file is parsed when the supervisor graph is built, a missing section stops the build, and its version is recorded with the run (§12).
+- **It is instruction, not enforcement,** like a `SKILL.md`: what an agent may do is decided by the gateway and the gates.
+
+The Supervisor is not a loop and has no such file; `route` has a prompt template.
+
 <details>
 <summary><b>Stage → owner → actions → tools / skills</b></summary>
 
@@ -209,15 +225,15 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 | Tool | What it does | Returns | Backing module | Used by |
 |---|---|---|---|---|
 | `search_web(query, since)` | Exa search for public documents and pages; returns candidate URLs with titles and dates. Results are untrusted data and become citable only after ingestion | `list[SearchResult]` | acquisition | Data Aggregator, directly |
-| `fetch_document(source)` | Follow a page's download link, or fetch a configured source URL; save the PDF/CSV/XLSX/JSON and return its receipt (§2). Refuses a domain that is not permitted | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
-| `scrape_page(url)` | Pull public page content when there is no downloadable file; same receipt, same domain rule | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
+| `fetch_document(source)` | Follow a page's download link, or fetch a configured source URL; save the PDF/CSV/XLSX/JSON and return its receipt (§2). Refuses a domain that is not permitted and a file over the size cap | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
+| `scrape_page(url)` | Pull public page content when there is no downloadable file; same receipt, same domain rule, and the page's size cap | `AcquiredItem` | acquisition | `acquire` (Data Aggregator) |
 | `tipranks_snapshot(tickers)` | One batched call to the server's `get_assets_data` for the whole universe: the consensus label and price target as TipRanks computes them, for equities and ETFs, with the next earnings date it reports (§2) | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_ratings(ticker)` | The server's `get_recent_analyst_ratings`, one call per equity: the trailing twelve months of analysts' rating actions | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_ai_analysis(ticker)` | The server's `get_ai_stock_analysis` in full detail, one call per equity: the six model ratings, each with its score, rating, price target and date | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_bulls_bears(tickers)` | The server's `get_bulls_bears_summary`, one batched call: the bull and bear points of each stock, each tagged with a topic | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_catalyst(tickers)` | The server's `get_stock_catalyst`, one batched call: TipRanks' summary of why each stock is moving | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_fetch(kinds, tickers)` | Run the TipRanks fetch as a whole (§2): for each kind named, skip what is fresh in the cache, stop at the quota reserve, call that kind's tool above once, validate the answer and hand the rows to ingestion. Refused for a past as-of date | `FetchReceipt` | acquisition | TipRanks agent, directly; `engine.refresh()` before Phase 5 |
-| `fetch_news(ticker, since)` | Collect candidate news articles and press releases for a ticker since a date | `list[AcquiredItem]` | acquisition | `acquire` (Data Aggregator) |
+| `fetch_news(ticker, since)` | Collect candidate news articles and press releases for a ticker since a date; an article over the page's size cap is refused (§2) | `list[AcquiredItem]` | acquisition | `acquire` (Data Aggregator) |
 | `ingest(items)` | Run the ingestion sub-graph on acquired items, named by the ids on their receipts, or on a supplied file (§2): inline for the `staleness.inline` types (the answer waits), queued to the worker for documents | `IngestReport` | acquisition | `acquire` (Data Aggregator) |
 | `parse_document(file)` | Docling conversion (via the `models` service, §9) into typed elements with page, bbox, associated caption and Docling's picture class; returns Markdown, JSON and the crops for the `ArtifactStore` to write (§3) | `ParsedDocument` | parsing | Ingestion sub-graph |
 | `route_ocr(doc)` | Count the text-layer characters of every page, including empty ones; send a page to LightOnOCR-2-1B on the `models` service when it is below `parsing.ocr_min_chars` and mostly covered by a raster image, with its picture boxes masked (§3) | `ParsedDocument` | parsing | Ingestion sub-graph |
@@ -234,7 +250,7 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 | `embed(items)` | Joint text + image embedding via Gemini Embedding 2 on OpenRouter (`openrouter.data_collection: deny`) | `list[Embedding]` | embedding | Ingestion sub-graph |
 | `retrieve(sub_query, predicates)` | Run the retrieval sub-graph (PROPOSAL §4.2 ①–⑤) as a whole and return an `EvidenceSet`: the chunks and records that survived, or what is missing when the sufficiency gate fails. At most `1 + retrieval.max_query_rewrites` calls per brief; further calls are refused. The Researcher's model sees it as hit cards (below) | `EvidenceSet` | retrieval | Researcher, directly |
 | `search(query, predicates, k)` | Predicates (ticker, doc type, filing Item or section, as-of/date window, `require_checkable`, the source-truth floor; `injection_suspect` chunks always excluded) as `WHERE`; then two candidate lists over what is left, by vector similarity and by full-text search (§4); then modality normalisation of the vector scores | `list[Hit]` | retrieval | Retrieval sub-graph |
-| `record_lookup(filters)` | Exact lookup of typed records (`financial_facts`, `prices`): one per metric and period among those known at the as-of date, chosen by source truth, with the records that corroborate or disagree attached (§4). Each is returned with its `record_ref` | `list[Hit]` | retrieval | Retrieval sub-graph; `verify_claim` |
+| `record_lookup(filters)` | Exact lookup of typed records (`financial_facts`, `prices`): one per metric and period among those known at the as-of date, chosen by source truth, with the records that corroborate or disagree attached (§4). Each is returned with its `record_ref`. A metric and period with no record is returned with its reason: not applicable, not found or not stated (§4) | `RecordLookup` | retrieval | Retrieval sub-graph; `verify_claim` |
 | `rerank(query, candidates)` | Qwen3-VL-Reranker-2B on the `models` service, one document at a time: crop for visual chunks, text for prose; falls back to text, then to retrieval order. Each score is then weighed by source truth (§4) | `list[Hit]` | retrieval | Retrieval sub-graph |
 | `check_sufficiency(hits)` | Stop if fewer than `retrieval.min_hits` candidates (reranked chunks plus exact record matches) survive; counts candidates, never thresholds a score | `SufficiencyResult` | retrieval | Retrieval sub-graph |
 | `news_window(ticker, start, end, event_types)` | Date-bounded, deduplicated news retrieval ranked by recency, measured from the as-of date, and source truth | `list[NewsItem]` | news | `build_digest` (Market Intelligence) |
@@ -247,10 +263,10 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 | `compare_companies(profiles, metrics)` | Side-by-side table across companies, on aligned fiscal periods | `Comparison` | analysis | `compare` (Financial Analyst) |
 | `price_trend(ticker, windows)` | From `prices`, per window (`trends.windows`) ending at the as-of date: return %, return relative to the sector ETF (equities), high/low, annualised volatility, max drawdown, average daily volume and its ratio to the 3-month average; plus distance from the 52-week high/low and from the `trends.moving_averages`. Cites the price rows used as a `record_ref` date range | `PriceTrend` | analysis | `compare` (Financial Analyst) |
 | `draft_claims(question, evidence)` | Draft the answer as a strict Pydantic `Draft` of `Claim`s (text, `source_kind`, `source_id`, `magnitude` / `shape`; §7), no defaults; evidence tagged CHECKABLE or ESTIMATED, with the crop of each chart and picture hit (§4). The Phase 5 Financial Analyst is not given this tool: it returns the same `Draft` schema, from the same drafting prompt, as its structured output | `Draft` | analysis | Phase 3 answer graph (drafting node) |
-| `route(question)` | One model call that returns a typed `Plan`: scope (single company / comparison), whether an exact figure is needed, the as-of date when the question states one, and the ordered steps with their sub-queries and the analyst views each needs (§6) | `Plan` | harness | Supervisor |
+| `route(question)` | One model call that returns a typed `Plan`: scope (single company / comparison), whether an exact figure is needed, the as-of date when the question states one, the ordered steps with their sub-queries and the analyst views each needs (§6), and its open questions. The instruments the steps name are then resolved in code against the universe, and those it can't place are listed as unresolved | `Plan` | harness | Supervisor |
 | `check_freshness(tickers, data_types)` | Compare `fetched_at` against `staleness` thresholds on the wall clock, when the as-of date is today (§4); list what needs a refresh, split into inline types, a provider's analyst views against their own thresholds (§2) and queued documents; queued items are named in the answer footer as "data as of" | `FreshnessReport` | harness | Supervisor |
 | `verify_claims(draft, evidence)` | Provenance rule (§4): every claim cites a retrieved chunk or record; a magnitude claim must cite a checkable source (under `policy.require_agreement`, an agreed table chunk or a typed record); a `shape` claim containing a number is blocked; so is a magnitude claim citing a source below `policy.min_source_truth`, and one whose figure is not found in the source it cites | `VerificationResult` | guardrails | Output gate |
-| `check_safety(text)` | Prompt-injection / unsafe-content check: deterministic rules first (known injection patterns, instructions aimed at the agent, requests for credentials), then a guard model on OpenRouter (`models.guard`) | `SafetyVerdict` | guardrails | Input and output gates; ingestion sub-graph (untrusted text) |
+| `check_safety(text)` | Prompt-injection / unsafe-content check: deterministic rules first (known injection patterns, instructions aimed at the agent, requests for credentials), then a guard model on OpenRouter (`models.guard`). The verdict is pass or stop, and names what decided it (design rules below) | `SafetyVerdict` | guardrails | Input and output gates; ingestion sub-graph (untrusted text) |
 
 </details>
 
@@ -272,12 +288,13 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 
 1. **Input gate:** `check_safety` on the question.
 2. **Load memory** (§13): the earlier turns of the session, the user's preferences and the records of similar past runs, read in code.
-3. **Plan:** `route` makes the Supervisor's one model call and returns a typed `Plan`: the scope, whether an exact figure is needed, the as-of date (§4) and an ordered list of steps. Each step names a sub-agent from a closed set (Researcher, Market Intelligence) and carries its sub-query. A Market Intelligence step also names the analyst views it needs, chosen from the kinds the enabled providers supply (§6).
-4. **Freshness:** `check_freshness` compares the plan's tickers, data types and analyst views with their thresholds, in code, and triggers a refresh only when the as-of date is today (§4). Stale prices or news put a Data Aggregator step ahead of the plan. An analyst view that is stale or missing puts a TipRanks agent step ahead of it, when that provider is enabled (§2). Stale documents are queued to the worker (§9.1). When everything is fresh, neither agent runs.
-5. **Plan walker:** a code node runs the steps in order with `Command(goto=...)`, handing each sub-agent its brief and storing the artifact it returns.
-6. **Draft:** the Financial Analyst runs last, and only if a step returned evidence. Otherwise the run stops and names what is missing.
-7. **Output gate:** `verify_claims` and `check_safety` (§4).
-8. **Persist memory** (§13): the turn and a record of the run, written in code, whatever the stop reason.
+3. **Plan:** `route` makes the Supervisor's one model call and returns a typed `Plan`: the scope, whether an exact figure is needed, the as-of date (§4) and an ordered list of steps. Each step names a sub-agent from a closed set (Researcher, Market Intelligence) and carries its sub-query. A Market Intelligence step also names the analyst views it needs, chosen from the kinds the enabled providers supply (§6). The plan also carries `open_questions`: what the model could not settle from the question and the session, written as short questions, never as guesses. `route` then resolves every instrument a step names against `instruments` (§1), in code, and lists those it can't place in the plan's `unresolved`.
+4. **Scope check:** a fixed edge, in code, before anything is fetched or retrieved. A plan with an unresolved instrument stops the run with `out_of_scope`, naming it. A plan with an open question stops with `needs_clarification` and returns the question. Neither is a pause: the run ends and its turn is stored (§13), and in a session the user's reply is a new run whose `route` reads that turn. Without this step both cases would spend the query rewrites and end as `insufficient_evidence`, which says what is missing and not why.
+5. **Freshness:** `check_freshness` compares the plan's tickers, data types and analyst views with their thresholds, in code, and triggers a refresh only when the as-of date is today (§4). Stale prices or news put a Data Aggregator step ahead of the plan. An analyst view that is stale or missing puts a TipRanks agent step ahead of it, when that provider is enabled (§2). Stale documents are queued to the worker (§9.1). When everything is fresh, neither agent runs.
+6. **Plan walker:** a code node runs the steps in order with `Command(goto=...)`, handing each sub-agent its brief and storing the artifact it returns.
+7. **Draft:** the Financial Analyst runs last, and only if a step returned evidence. Otherwise the run stops and names what is missing.
+8. **Output gate:** `verify_claims` and `check_safety` (§4).
+9. **Persist memory** (§13): the turn and a record of the run, written in code, whatever the stop reason.
 
 **Handoffs are typed.** Sub-agents don't share a conversation. Each receives a brief and returns an artifact, both Pydantic models in `schemas/`:
 
@@ -285,7 +302,7 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 |---|---|---|
 | Data Aggregator | `AcquisitionBrief`: tickers and the stale data types from `check_freshness` | `AcquisitionReport`: what was ingested inline, what was queued, what failed |
 | TipRanks agent | `ViewsBrief`: tickers and the analyst views `check_freshness` found stale or missing | `FetchReport`: for each kind, whether it was fetched, served from the cache or skipped at the quota reserve; the dates covered; the metered calls used and left |
-| Researcher | `ResearchBrief`: sub-query, tickers, as-of date, whether an exact figure is needed | `EvidenceSet`: the chunks and records that survived retrieval, each tagged CHECKABLE or ESTIMATED, or what is missing |
+| Researcher | `ResearchBrief`: sub-query, tickers, as-of date, whether an exact figure is needed | `EvidenceSet`: the chunks and records that survived retrieval, each tagged CHECKABLE or ESTIMATED, or what is missing, with the reason for a missing figure (§4) |
 | Market Intelligence | `NewsBrief`: tickers, as-of date, date window, event types, the analyst views wanted | `NewsDigest` (§6) |
 | Financial Analyst | `AnalysisBrief`: the question, the as-of date, every `EvidenceSet` and `NewsDigest` collected, whether an exact figure is needed, the user's preferences (§13); on a redraft, the failure reason | `Draft` |
 
@@ -298,7 +315,7 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 
 **The handoff has A2A's shape, in one process.** The Agent2Agent protocol (A2A 1.0) describes how separate agents exchange work. The sub-agents here are sub-graphs of one process, so nothing is served and no A2A library is used. The contracts are aligned with it so that serving an agent over A2A later is a mapping, not a redesign (§9):
 - **An agent card** is derived in code from an `AgentSpec` and its skills: the agent's name and description, and one entry per skill with its name and description.
-- **A plan step has a state,** recorded in `run_steps` under A2A's task-state names: `completed`, `failed`, `rejected` for a refusal, `canceled` when the run stopped first. `input-required` and `auth-required` are reserved for an approval step and a provider sign-in, neither of which exists yet.
+- **A plan step has a state,** recorded in `run_steps` under A2A's task-state names: `completed`, `failed`, `rejected` for a refusal, `canceled` when the run stopped first. `input-required` and `auth-required` are reserved for an approval step and a provider sign-in, neither of which exists yet. A question the plan can't settle is not `input-required`: it ends the run with `needs_clarification` (above), and no step waits.
 - **An artifact is made of parts:** structured data (hits, records, a digest) and files by reference (a crop's path and hash, §3). It is never a transcript.
 
 **One path to an action, one path to a tool.** A model reaches an action, and a script reaches a tool, only through `call_tool` in `tools/gateway.py`, the engine's version of the Day 1 hands-on gateway.
@@ -320,15 +337,15 @@ Every sub-agent is an LLM loop plus the skills it holds. It is declared as a fro
 
 **Every run ends in a typed result.** `engine.answer()` and `engine.ask()` return a `RunResult` (`run.py`) and don't raise for an expected stop.
 
-- **`RunResult`** holds the `Answer` or the partial result, a `StopReason`, the run id of its stored record (§12) and the trace id.
-- **`StopReason`** is a closed set: `answered`, `unsafe_input`, `insufficient_evidence`, `provenance_failed`, `unsafe_output`, `budget_exhausted`, `step_limit`, `no_progress`, `timeout`, `tool_failed`, `invalid_output`. LangGraph raises an error when the recursion limit is hit; the engine catches it and returns `step_limit`, so a truncated run never looks like a finished one.
+- **`RunResult`** holds the `Answer` or the partial result, a `StopReason`, the run id of its stored record (§12) and the trace id. For `needs_clarification` it also holds the questions to ask.
+- **`StopReason`** is a closed set: `answered`, `unsafe_input`, `out_of_scope`, `needs_clarification`, `insufficient_evidence`, `provenance_failed`, `unsafe_output`, `budget_exhausted`, `step_limit`, `no_progress`, `timeout`, `tool_failed`, `invalid_output`. LangGraph raises an error when the recursion limit is hit; the engine catches it and returns `step_limit`, so a truncated run never looks like a finished one.
 - **`Budget`** is built per run from the settings: tool calls (`policy.max_tool_calls`), model calls (`policy.max_model_calls`), seconds (`policy.max_seconds`), cost (`cost.max_usd_per_query`) and the size of each agent's context (below). The gateway counts every call it lets through, a model's and a script's alike; the wrapper around the chat model (§8) counts model calls and adds up cost from the usage each response reports. Exhausting any of them stops the run with `budget_exhausted`, or with `timeout` for the seconds. What has been spent is kept in the graph state, so a resumed run continues with what it had left (§13). The budget covers the answer path only: ingestion triggered by a question has its own per-document limits (`charts.max_enriched_per_doc`, `tables.max_verified_per_doc`) and records its model calls and cost on `ingest_runs` (§12).
 - **An agent's context is measured, and capped.** For every model call the wrapper records how the prompt divides among the seven components the course names (Day 1): instructions, loaded skill text, the brief, action schemas, retrieved evidence, the earlier results of the same loop, and the room left to answer. The total is the provider's count; the split is estimated in code. A call that would exceed its agent's limit in `policy.max_context_tokens` stops the run with `budget_exhausted`, naming the agent and its largest component. Nothing is dropped or summarised to make a call fit: a summary could carry a figure without its source (§13). An agent's limit is set from its first measured baseline (§11); until then the measure is recorded and no limit applies.
 - **Model fallback** belongs to the same wrapper, not to a backend: when the primary model fails, it retries on `models.fallback` and records the switch in the trace. A test double goes through the wrapper too, so the budget and the fallback are testable without a real model.
 - **A model output that fails its schema gets a bounded second chance.** Every structured call asks the provider for strict JSON-schema output, and is routed only to providers that support it. If the answer still fails its Pydantic model, the wrapper sends the validation error back and asks again, up to `policy.max_validation_retries` times, each attempt counted against the budget. The fallback model then gets the same chance. After that the run stops with `invalid_output`. A heuristic schema, such as chart routing, falls back to its defaults instead and is counted (design rules below); a control never does.
 
 **How skills are loaded.** LangGraph with OpenRouter models has no built-in skill runtime, so `agents/skill_loader.py` provides one:
-1. When the supervisor graph is built, it parses every `SKILL.md` into a Pydantic `Skill`, registers the skill's scripts, and gives each agent the name and description of the skills it holds, together with their actions. A skill that fails validation stops the build, so no question is answered with a broken skill. The actions are bound once, here, so the list a model sees never changes during a run.
+1. When the supervisor graph is built, it parses every `SKILL.md` into a Pydantic `Skill`, registers the skill's scripts, and gives each agent the name and description of the skills it holds, together with their actions: the Skills section of its instructions (above). A skill that fails validation stops the build, so no question is answered with a broken skill. The actions are bound once, here, so the list a model sees never changes during a run.
 2. `load_skill(name)` returns the full `SKILL.md`; `read_skill_reference(name, file)` returns one reference file. The file must be one the skill lists. Any other name is refused, so a model can't read outside the skill's folder.
 3. A script runs with a gateway bound to its agent and its skill, and reaches data only through it.
 4. Skills load only from the repository, never from fetched content, so a scraped page can't plant a skill.
@@ -352,6 +369,7 @@ A skill's verification and failure-mode sections tell the agent how to report a 
 - **Be tolerant with heuristics, strict with controls.** Chart-routing schemas default every field, so a partial answer still routes. The `Claim` schema the verifier operates on defaults nothing.
 - **State holds JSON; nodes re-validate.** Every graph state (ingestion, retrieval, answer, supervisor) is a `TypedDict` of JSON-serialisable values, as in the course notebooks. A node stores a Pydantic object as `model_dump(mode="json")`, and the node that reads it validates it again, so a control such as `verify_claims` never trusts an object it did not parse. The state also stays safe for any checkpointer. Binary and large artifacts never enter a state: page images, crops, the Docling document and embeddings stay on disk or in PostgreSQL, and the state carries a path or id with a hash (§3).
 - **Guardrails are graph nodes, not tool calls.** The input and output gates (PROPOSAL §4.3) are fixed edges of the supervisor graph, and ingestion screening (§6) is a fixed step of the ingestion sub-graph, so no LLM can skip them. The redraft and loop limits are in §4.
+- **A safety verdict is pass or stop.** `check_safety` returns a `SafetyVerdict`: the outcome, the stage that decided (the rules, or the guard model), the rules that matched and the guard model's label. The gate's step in `run_steps` keeps all of it (§12), so the rules can be tuned from the record. There is no middle verdict. The course's firewall notebook has one that sends a text to a person (Day 4), and no approval step exists here, so a "review" that nobody reviews would be a stop under another name.
 
 ## 6. Market intelligence workflow
 
@@ -435,7 +453,7 @@ One PostgreSQL database holds everything. Typed records live in relational table
 
 | Table | Key columns | Written by | Read by |
 |---|---|---|---|
-| `ingest_runs` | ingest_run_id, doc_id, started_at, status; parser, OCR, vision and embedding model ids; prompt versions; settings hash; git commit; counts (pages, OCR pages, chunks by kind, charts enriched and skipped, tables verified, not attempted and demoted to text, pictures dropped as decorative or uncaptioned, pictures masked on OCR pages, unmapped characters, records written, and for a provider fetch the re-fetches of each kind and how many returned unchanged content); model calls, tokens and cost; trace_id | Ingestion sub-graph | Evaluation, debugging |
+| `ingest_runs` | ingest_run_id, doc_id, started_at, status; parser, OCR, vision and embedding model ids; prompt versions; settings hash; git commit; counts (pages, OCR pages, chunks by kind and their sizes, charts enriched and skipped, tables verified, not attempted and demoted to text, pictures dropped as decorative or uncaptioned, pictures masked on OCR pages, unmapped characters, records written, and for a provider fetch the re-fetches of each kind and how many returned unchanged content); model calls, tokens and cost; trace_id | Ingestion sub-graph | Evaluation, debugging |
 | `runs` | run_id, case_id, session_id, status (running / finished / failed), entry point (`answer` / `ask`), question, as-of date, plan, answer, stop_reason, policy level, versions (git commit, settings hash, prompt, model and skill versions), tokens, cost, latency, trace_id, created_at; for an evaluation run, the slice it belongs to and whether it is the accepted baseline of its case | `Tracer` | Evaluation, replay |
 | `run_evidence` | run_id, source (`chunk_id` or `record_ref`), the representation as it was read, its dates, content_hash, the crop's path and hash for a table, chart or picture, anchor, CHECKABLE / ESTIMATED, the source-truth coefficient in force, whether a claim cited it | `Tracer` | Replay, evaluation |
 | `run_steps` | run_id, step index, parent step, agent, step type (plan step / model call / action / tool call / gate / decision), the loop it belongs to (query rewrite, redraft, an agent's loop), input and output as JSON in chat-message form (an image as its path and hash, never its bytes), outcome and reason, tokens, cost, latency, Langfuse observation id. Also, by step type: a plan step's state; an action's skill and version, script and result envelope; a model call's context by component; a decision's options and who decided (§12.1) | `Tracer` | Evaluation, trajectory export |
@@ -557,7 +575,7 @@ src/finrag_engine/
 │   ├── records.py         # Instrument, Document, FinancialFact, Price, NewsItem, AnalystRating, AnalystNote,
 │   │                      # RecordBatch, ChunkRef, RecordRef, CalcRef
 │   ├── acquisition.py     # SearchResult, AcquiredItem, FetchReceipt, IngestReport, DedupeResult, NewsClassification
-│   ├── retrieval.py       # Predicates, Hit, HitCard, EvidenceSet, SufficiencyResult
+│   ├── retrieval.py       # Predicates, Hit, HitCard, RecordLookup, EvidenceSet, SufficiencyResult
 │   ├── news.py            # NewsDigest, Consensus, NewsTrend, ClaimCheck
 │   ├── analysis.py        # MetricValue, Comparison, PriceTrend
 │   ├── answer.py          # Claim, Draft, VerificationResult, SafetyVerdict, Answer
@@ -568,7 +586,7 @@ src/finrag_engine/
 │                          # run-record store are separate classes (§12)
 │                          # ArtifactStore writes crops and Docling artifacts to disk (§3)
 ├── prompts/               # prompt templates for model-calling tools outside ingestion (route, draft_claims)
-│                          # and the sub-agents' system prompts
+│   └── agents/            # one instructions file per sub-agent, in five sections (§5)
 ├── tools/                 # every tool in §5: typed input/output, no inline prompt
 │   ├── registry.py        # ToolSpec per tool (arguments model, return model, read_only and control flags)
 │   │                      # and ScriptSpec per script (its skill, arguments model, result model)
@@ -587,10 +605,10 @@ src/finrag_engine/
 │   └── guardrails.py      # verify_claims, check_safety
 ├── agents/                # LangGraph agents: a prompt + the skills the agent holds
 │   ├── registry.py        # one AgentSpec per sub-agent; a provider's agent only when it is enabled (§5)
-│   ├── factory.py         # make_agent_node(spec, ctx): builds every sub-agent from its spec
+│   ├── factory.py         # make_agent_node(spec, ctx): builds every sub-agent from its spec and its instructions file
 │   ├── state.py           # supervisor state (TypedDict) holding the Plan and the artifacts (§5)
 │   ├── skill_loader.py    # parses every SKILL.md into a Skill and registers its scripts; load_skill, read_skill_reference
-│   └── supervisor.py      # supervisor graph: input gate → load memory → route → check_freshness → plan walker
+│   └── supervisor.py      # supervisor graph: input gate → load memory → route → scope check → check_freshness → plan walker
 │                          # → output gate (pipelines/answer.py + check_safety) → persist memory
 ├── pipelines/             # sub-graphs composed from tools
 │   ├── ingestion/         # deterministic ingestion sub-graph + its prompts and reference data
@@ -777,7 +795,7 @@ What the `models` image must contain, besides the models (`spikes/phase0`, check
 | Comparison across periods or companies | `engine.answer()` | chat model, embedder, reranker | The numbers equal hand-computed ones |
 | Market brief: news, analyst consensus, AI ratings | `engine.ask()` | chat model; TipRanks and Exa with synthetic payloads | Every item is inside the window and known at the as-of date; the consensus arithmetic; AI ratings stay out of it; the TipRanks credit line; with the provider off, each analyst view is marked unavailable; no TipRanks payload reaches a model call |
 | Chart question | `engine.answer()` | chat model scripted to forge a chart figure | The forged figure is blocked; a claim about shape passes |
-| Stop case: a question the corpus can't answer | `engine.answer()`, `engine.ask()` | chat model | The stop reason, and that it names what is missing |
+| Stop case: a question the corpus can't answer; at `engine.ask()`, also an instrument outside the universe and a question too unclear to plan | `engine.answer()`, `engine.ask()` | chat model | The stop reason, and that it names what is missing, the instrument, or the question to ask; the last two stop before anything is retrieved or fetched |
 | Interrupted run | `engine.resume()` | chat model | The run continues from its last completed step with the budget it had left, and no completed step runs again |
 | Follow-up question in a session | `engine.ask()` | chat model | The second turn resolves its reference to the first, and its figures cite evidence retrieved in the new run |
 | Ingestion | `engine.ingest()` on a synthetic fixture document | parser, OCR, vision model, embedder | Every element kind reaches the store with its crop reference; each dropped item is counted |
@@ -798,6 +816,37 @@ What the `models` image must contain, besides the models (`spikes/phase0`, check
 | Worker | `docker compose logs worker`; to step through ingestion, stop the container and run `arq` from the `uv` environment under the debugger |
 | Tests, migrations | Test Explorer or `pytest`; `alembic upgrade head` |
 | `models` | `docker compose logs models` |
+
+### 9.3 Phases and their slices
+
+Each phase of the roadmap (PROPOSAL §5), with the slices that build it. A phase is sliced when work on it starts, in `docs/slices/phase-N.md`. Until then this section holds what the phase must deliver, which is what its slices will be cut from.
+
+#### Phase 0. Environment
+
+Slices, specified in [slices/phase-0.md](slices/phase-0.md): 0.1 Package skeleton; 0.2 Settings; 0.3 PostgreSQL with pgvector; 0.4 Engine shell and the two contexts; 0.5 Worker; 0.6 `models` service on the GPU; 0.7 Test fixtures; 0.8 LightOnOCR on the laptop GPU; 0.9 Durable runs.
+
+#### Phase 1. Multimodal RAG
+
+Slices, specified in [slices/phase-1.md](slices/phase-1.md):
+- **A thin path, text only:** 1.1 Universe and first stored document; 1.2 Embedding; 1.3 Search with predicates; 1.4 Sufficiency gate and evidence set; 1.5 First answer graph; 1.6 Run controls around the chat model; 1.7 Run record and tracing; 1.8 Behaviour baseline.
+- **Real documents:** 1.9 Parse a born-digital PDF; 1.10 Text chunks under their heading path; 1.11 Tables; 1.12 Pictures and text printed in charts; 1.13 OCR routing and OCR; 1.14 Acquisition without an agent; 1.15 A refresh never destroys.
+- **Better ranking:** 1.16 Normalisation, reranking and source truth.
+
+#### Phase 2. Structured extraction
+
+Not sliced yet. It delivers: SEC XBRL facts and table cells as typed records, with tables verified by agreement; the reason a figure is missing (§4); one ticker key across all sources; news as timestamped records; analyst views from an optional provider, fetched on demand; one year of daily prices and the deterministic trend tools (price, consensus and news over 1 week, 1 month and 3 months); the scheduled refresh in the worker. Notebook `03_structured_extraction`.
+
+#### Phase 3. Charts and provenance
+
+Not sliced yet. It delivers: chart classification, JSON estimates and captions; chart checks against filings data; the provenance gate (draft, `verify_claims`, one redraft) as a reusable sub-graph, with its number check, proven by blocking a forged chart-number claim. Notebook `04_charts_provenance`.
+
+#### Phase 4. Evaluation
+
+Not sliced yet. It delivers: the question set extended with questions generated with Ragas and re-run on the Phase 1–3 graphs; hard checks and DeepEval's judged scores, each stored with its run, compared with its baseline and shown in Langfuse; trajectory ranking of the answer graph's paths (sufficiency stop, redraft). Notebook `05_evaluation`.
+
+#### Phase 5. Multi-agent and hardening
+
+Not sliced yet. It delivers: the Supervisor and the sub-agents, with their instructions files, wrapping the Phase 1–4 pipelines; the skill loader and the 6 skills with their typed scripts; the stop on a question outside the universe or too unclear to plan; agentic acquisition, with an optional TipRanks agent; session memory and the long-term store; the input and output gates and ingestion screening; trajectory evaluation of the agents. Notebook `06_multi_agent`, the capstone demo.
 
 ## 10. Configuration
 
@@ -924,6 +973,9 @@ retrieval:
 
 records:
   agreement_tolerance: 0.01         # relative difference above which two sources' values for one metric and period disagree (§4)
+  metrics_by_type:                  # a metric listed for another type and not for this one is "not applicable" (§4).
+    Equity: [revenue, net_income, eps]          # The names are placeholders: the lists take the metric names
+    ETF: [expense_ratio, net_assets]            # that extraction writes in Phase 2
 
 models_service:
   idle_unload_seconds: 0            # 0 = keep models loaded. RTX 3080 Ti laptop (16 GB) holds all four models
@@ -946,6 +998,8 @@ policy:
 
 scraping:
   requests_per_minute: 20
+  max_page_bytes:                   # a page or a news article; over it the fetch is refused (§2). Both caps are required,
+  max_file_bytes:                   # and are set from the sizes check 8 records, before slice 1.14
 
 timeouts:                    # seconds, on every outside call (§4)
   model: 60
@@ -1055,10 +1109,11 @@ source_truth:                # 1-10: how far a figure from this source can be tr
 
 ## 11. Evaluation checks in detail
 
-- **Retrieval and answer quality (Phase 1+):** a hand-labelled QA set (question, as-of date, expected chunk or record, expected answer) that grows each phase. Pinning the as-of date keeps an expected answer true after newer documents are ingested. Nothing from TipRanks is in the set, and an evaluation run switches off every provider that sets `in_evaluation: false` (§2).
+- **Retrieval and answer quality (Phase 1+):** a hand-labelled QA set (question, as-of date, expected chunk or record, expected answer, or the stop reason the case must end in) that grows each phase. Pinning the as-of date keeps an expected answer true after newer documents are ingested. Nothing from TipRanks is in the set, and an evaluation run switches off every provider that sets `in_evaluation: false` (§2).
   - From Phase 1: retrieval hit rate, i.e. whether the expected source is in the top `retrieval.top_k`.
   - From the close of Phase 1: judged scores from DeepEval, the library the course's Day 1 and Day 3 notebooks score with. They are faithfulness (with the crop, for a chart or picture hit), contextual relevancy, and a G-Eval criterion for correctness against the expected answer. The judge is `models.judge`.
   - **Hard checks gate; judged scores must not degrade.** A hard check (provenance, a figure equal to its cited record, a citation that resolves, the stop reason) must pass on every run. A judged score moves from run to run and with the library's version, so it is never asserted exactly: it is compared with the baseline stored in `run_scores` for the same case, and the run fails only when it falls by more than `evaluation.regression_tolerance`. After a DeepEval upgrade the baseline is scored again.
+  - **Questions that must not be answered.** Some cases carry no expected answer and the `StopReason` they must end in: a figure the corpus does not hold and, from Phase 5, an instrument outside the universe and a question too unclear to plan (§5). The stop reason is a hard check on every case, so answering one of these fails the run, and so does stopping on a question the corpus can answer. Refusal accuracy, one of the course's retrieval measures (Day 1), is reported as those two rates: answered when it should have stopped, and stopped when it should have answered.
   - A judged faithfulness score is not the provenance rule. It only asks whether the answer contradicts what was retrieved; `verify_claims` stays the gate.
   - From Phase 4: questions generated with Ragas' `TestsetGenerator`, as in the course's Day 1 notebook, reviewed by hand before they join the set. The earlier phases' graphs are re-run so scores stay comparable.
   - DeepEval and Ragas run with their telemetry off and no cloud key (§10), so what they see goes only to the judge model.
@@ -1124,11 +1179,16 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   - A table with group rows, a wrapped row label and mixed unit suffixes yields the right label, value and unit for every cell.
   - A value in parentheses is negative; a scale in the header reaches every cell; a subtotal row is flagged and the table foots; a footnote stays with its table and with the cells that carry its marker.
   - A section longer than the limit is cut at paragraphs and every piece carries its heading path; a deck gives one text chunk per slide; a filing chunk carries its Item.
+  - The chunk sizes in `ingest_runs` equal those of the stored chunks, kind by kind, and so does the number cut at the limit.
 - **Source truth (Phase 1+)**, the rules of §4:
   - For the same fact, a filing passage outranks a third-party report passage of similar relevance. With `retrieval.source_truth_weight: 0` the order is by relevance alone.
   - When a report's table and XBRL give different values for one metric and period, `record_lookup` returns the XBRL record and the answer shows the disagreement.
   - With `policy.min_source_truth` above a source's coefficient, its chunks are not retrieved for a question that needs a figure, and a magnitude claim citing it is blocked.
   - Every citation in an answer shows its coefficient, and a stored run shows the coefficient that was in force.
+- **Missing figures (Phase 2+)**, the rule of §4:
+  - A metric listed for another instrument type is reported `not_applicable`; a period with no record at all, `not_found`; a period with records and none for the metric, `not_stated`.
+  - A period whose records were all filed after the as-of date is `not_found`.
+  - The answer repeats the reason, and words `not_stated` as "not in the documents ingested for that period".
 - **As-of date (Phase 1+)**, the rules of §4:
   - A document published after the as-of date is not retrieved, and a fact filed after it is not returned by `record_lookup`.
   - With an as-of date before a restatement, the original value is returned; as of today, the restated one.
@@ -1172,15 +1232,19 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   - From Phase 4, every evaluation score is a `run_scores` row and the same score in Langfuse.
 - **Gates and screening (Phase 5):**
   - An injection in the question stops at the input gate.
+  - A question about an instrument outside the universe stops with `out_of_scope`, and a plan with an open question stops with `needs_clarification` and returns the question; in both, nothing is retrieved or fetched. The reply, as the next turn of the session, is planned with the question that was asked.
+  - Every `check_safety` verdict in `run_steps` names the stage that decided and the rules that matched.
   - An instruction planted in a scraped page, news item or MCP result is flagged at ingestion and never retrieved.
   - An unsafe draft stops without a redraft.
   - A draft that fails provenance twice stops with its reason.
   - `check_safety`'s rules are unit-tested on known injection patterns, without the guard model.
   - A URL outside the permitted domains is refused by `fetch_document` and `scrape_page`, and a search result from one is dropped and counted.
+  - A page or a file over its size cap is refused and counted, and nothing of it is stored (tested from Phase 1, with the first acquisition slice).
   - No TipRanks payload appears in a model call of the TipRanks agent: its window holds the fetch receipt only.
 - **Skills, scripts and the gateway (Phase 5)**, the rules of §5:
   - A model that calls a tool sitting behind a script is refused. A script that calls a tool its skill did not declare is refused. A skill that declares a control stops the build.
   - `read_skill_reference` refuses a file the skill does not list.
+  - A sub-agent's instructions file with a missing section stops the build, and its Skills section lists exactly the skills of its `AgentSpec`.
   - The view of an action's result never exceeds `policy.max_result_chars`, and the full result is in the state under the reference the view gives.
   - A model call of the Researcher holds hit cards and no chunk text.
   - Every model call has its context by component in `run_steps`, and a call over its agent's limit stops the run with `budget_exhausted`, naming the agent.
@@ -1208,6 +1272,7 @@ Every `engine.answer()` and `engine.ask()` call writes a run record, including a
   - a plan step, its state (§5);
   - an action, its skill and version, its script, its arguments and its result envelope (§5);
   - a model call, its context by component (§5);
+  - a safety gate, its verdict: the stage that decided, the rules that matched and the guard model's label (§5);
   - a decision (the plan, the views a step asks for, the action a model chose), the options that were available and who decided: a model with its prompt version, or a rule.
 - **`run_scores`** holds every score given to a run: gate results, hard checks and DeepEval's judged scores. Rows are only added, so a run can be scored again by a new scorer.
 - **`case_id`** on `runs` groups runs of the same question at the same as-of date: the QA-set id for an evaluation run, otherwise a hash of the normalised question and the as-of date. The word "scenario" is kept for investment scenarios (§9).
@@ -1218,7 +1283,7 @@ Every `engine.answer()` and `engine.ask()` call writes a run record, including a
 
 ### 12.2 The ingestion record
 
-Every ingested item writes an `ingest_runs` row: the parser, OCR, vision and embedding models, the prompt versions, the settings hash, the git commit, the per-document counts (pages, OCR pages, chunks by kind, charts enriched and skipped, tables verified, not attempted and demoted to text, pictures dropped as decorative or uncaptioned, pictures masked on OCR pages, unmapped characters, records written) and the model calls, tokens and cost it used. A provider fetch also records, for each kind, how many re-fetches it made and how many returned content whose hash had not changed, which is the evidence for tuning a staleness threshold (§2). Every rule in §3 that drops or changes something has a count here, so nothing disappears silently. Chunks and typed records point to it through `ingest_run_id` (§7). A chunk can therefore be traced to the exact models that produced it, which matters when the embedder is swapped (PROPOSAL §8.1), and to the commit that produced it, which a rollback needs (§9.2).
+Every ingested item writes an `ingest_runs` row: the parser, OCR, vision and embedding models, the prompt versions, the settings hash, the git commit, the per-document counts (pages, OCR pages, chunks by kind and their sizes, charts enriched and skipped, tables verified, not attempted and demoted to text, pictures dropped as decorative or uncaptioned, pictures masked on OCR pages, unmapped characters, records written) and the model calls, tokens and cost it used. A provider fetch also records, for each kind, how many re-fetches it made and how many returned content whose hash had not changed, which is the evidence for tuning a staleness threshold (§2). Every rule in §3 that drops or changes something has a count here, so nothing disappears silently. Chunk sizes are kept per kind, in characters: the smallest, the median, the 95th percentile and the largest, and how many chunks were cut at `chunking.max_chars`. A count can't show that a chunking rule changed what a model reads and a size can, which is the check the course's chunking notebook makes (Day 1). Chunks and typed records point to it through `ingest_run_id` (§7). A chunk can therefore be traced to the exact models that produced it, which matters when the embedder is swapped (PROPOSAL §8.1), and to the commit that produced it, which a rollback needs (§9.2).
 
 ### 12.3 Tracing
 
@@ -1258,7 +1323,7 @@ The course teaches memory as three layers and names PostgreSQL for it in product
 ### 13.2 Session memory
 
 - **A session is a thread.** `engine.ask(question, session_id=...)` adds a turn to it. Each call is still one run, with its own run id, as-of date, budget and record (§12).
-- **A turn is a small typed record.** The supervisor state keeps a list of `Turn`s: the question, the as-of date, the tickers, the claims that were emitted with their source ids, and the stop reason. The persist node assembles it in code.
+- **A turn is a small typed record.** The supervisor state keeps a list of `Turn`s: the question, the as-of date, the tickers, the claims that were emitted with their source ids, the stop reason and, when the run stopped with `needs_clarification`, the question it asked (§5). The persist node assembles it in code.
 - **`route` reads the last `memory.session_turns` turns** to resolve a reference such as "and for Microsoft?". It writes sub-queries that stand alone, so no sub-agent needs the session.
 - **A follow-up inherits the as-of date of the turn it refers to,** unless it states its own (§4).
 - **Older turns are dropped, not summarised.** A summary could carry a figure without its source.
