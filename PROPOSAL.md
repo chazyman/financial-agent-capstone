@@ -459,7 +459,7 @@ Only what this capstone uses. Model IDs and switches live in `config/settings.ya
 | Jobs | **arq** + Redis (ingestion worker) |
 | Orchestration | **LangGraph**, LangChain primitives, `langchain-openai` pointed at OpenRouter; `langgraph-checkpoint-postgres` for the checkpointer and the memory store |
 | LLM + embedding access | **OpenRouter** chat and `/embeddings` (`openrouter.data_collection: deny` on every call) |
-| Data acquisition | `requests`, **Exa** (agentic web search), the MCP Python SDK (TipRanks) |
+| Data acquisition | `httpx`, **Exa** (agentic web search), the MCP Python SDK (TipRanks) |
 | Document parsing | **Docling** + `docling-core`, **PyMuPDF** + **Pillow** |
 | Local model runtime | `transformers` ≥ 5.0, `torch`, `qwen-vl-utils`, in the `models` image only |
 | Structured output + config | **Pydantic v2**, `pydantic-settings` (`config/settings.yaml`, `config/sources.yaml` + `.env`; [DESIGN §10](docs/DESIGN.md#10-configuration)) |

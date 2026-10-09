@@ -29,22 +29,22 @@ Every slice of this phase is a substrate slice. What a slice is, its two kinds, 
 
 ### 0.2 Settings
 
-- **Must hold:** one Pydantic `Settings` object is built from `.env`, `config/settings.yaml` and `config/sources.yaml`. Environment variables override YAML. `.env.example` lists every name with an empty value.
+- **Must hold:** one Pydantic `Settings` object is built from `.env`, `config/settings.yaml` and `config/sources.yaml`. Environment variables override YAML. `.env.example` lists every name with an empty value. `.env` keeps the database URL in its plain form, and `Settings` derives from it the form SQLAlchemy needs to use psycopg 3.
 - **Rules:** §10; the source-truth coefficients of §4.
-- **Test:** unit. A missing value, a mistyped value and a source without a coefficient each fail at startup, naming the key. An environment variable overrides its YAML value. No secret appears in the object's printed form.
+- **Test:** unit. A missing value, a mistyped value and a source without a coefficient each fail at startup, naming the key. An environment variable overrides its YAML value. No secret appears in the object's printed form. The derived database URL names the psycopg 3 driver.
 
 ### 0.3 PostgreSQL with pgvector
 
-- **Must hold:** `docker compose up -d postgres` gives a database with the `vector` extension. Alembic applies and reverses the first migration. The engine reaches the database through psycopg 3, the async driver LangGraph's checkpointer also needs (§13.5).
+- **Must hold:** `docker compose up -d postgres` gives a database with the `vector` extension. Alembic applies and reverses the first migration. The engine reaches the database through psycopg 3, the async driver LangGraph's checkpointer also needs (§13.5). One explicit setup step creates the tables, the extension first and then the migrations; it is run by hand and by the test session, never by the engine or the worker. The tests use a database of their own on the same service, which the test session creates and sets up. The stores' pool has a size in the settings, added by this slice.
 - **Rules:** §7 ("Exact search first"), §8 ("I/O is async"), §9.1.
-- **Test:** integration. The migration upgrades and downgrades cleanly. One async query filters rows with a `WHERE` clause and orders the rest by vector distance, and returns exactly the rows the predicate allows.
+- **Test:** integration. The migration upgrades and downgrades cleanly. One async query filters rows with a `WHERE` clause and orders the rest by vector distance, and returns exactly the rows the predicate allows. A test run leaves the working database untouched. The async test plugin runs one event loop for the whole session, because a pool belongs to the loop that created it.
 - **Rests on:** check 10 (pgvector through the async driver). This slice's test closes it.
 
 ### 0.4 Engine shell and the two contexts
 
-- **Must hold:** `Engine(ctx)` accepts a context built from fakes, and `Engine.from_settings()` builds the real one. `RunContext` carries the run id, the as-of date, the wall clock, the budget (tool calls, model calls, seconds and cost) and the policy level. A graph node receives it through `context_schema`. A run ends in a `RunResult` with a `StopReason`.
+- **Must hold:** `Engine(ctx)` accepts a context built from fakes, and `Engine.from_settings()` builds the real one. `RunContext` carries the run id, the as-of date, the wall clock, the budget (tool calls, model calls, seconds and cost) and the policy level. A graph node receives it through `context_schema`. A run ends in a `RunResult` with a `StopReason`. One wrapper function, applied to every node when a graph is built, carries the node's timeout, its error handler and the copy of what the step spent into the state; each step writes what it spent and the state adds it up. The tracing of the step joins the wrapper in slice 1.7. `from_settings()` allocates nothing: each resource allocates itself on first use, and `aclose()` releases what was allocated in reverse order; `async with` does both. One clock object in the engine context, real or fake, supplies the wall clock.
 - **Rules:** §8 ("Two contexts, two lifetimes", "`Engine`", "I/O is async"), §4 ("One as-of date per run", "Two clocks"), §5 ("Every run ends in a typed result").
-- **Test:** unit and end-to-end on fakes. A one-node graph run through the engine returns its `RunResult`. Two runs started together with different as-of dates each see their own, and neither waits for the other. A step-limit overrun returns `step_limit` instead of raising, and a run past its time budget returns `timeout`. An architecture test fails if any module of the package reads the system clock.
+- **Test:** unit and end-to-end on fakes. A one-node graph run through the engine returns its `RunResult`. Two runs started together with different as-of dates each see their own, and neither waits for the other. A step-limit overrun returns `step_limit` instead of raising, and a run past its time budget returns `timeout`. After a two-step graph the state holds the sum of what each step spent. Fake resources are released in the reverse of the order they were allocated, an engine that used none allocates none, and a second `aclose()` does nothing. An architecture test fails if any module other than the clock's reads the system clock.
 - **Rests on:** check 1 (passed).
 
 ### 0.5 Worker
@@ -55,9 +55,9 @@ Every slice of this phase is a substrate slice. What a slice is, its two kinds, 
 
 ### 0.6 `models` service on the GPU
 
-- **Must hold:** `docker/models.Dockerfile` builds an image with GPU PyTorch, either a C compiler or `TORCH_DISABLE_NATIVE_JIT=1`, a pinned font set, and OpenCV's system libraries. The container sees the GPU. `/health` reports the device and its free memory. No model endpoint yet: `/ocr` arrives in slice 0.8, and the others with the Phase 1 slices that use them.
+- **Must hold:** `docker/models.Dockerfile` builds an image with GPU PyTorch, either a C compiler or `TORCH_DISABLE_NATIVE_JIT=1`, a pinned font set, and OpenCV's system libraries. The container sees the GPU. `/health` reports the device, its free memory and the version of each library and model the image serves, a list that grows as endpoints arrive. No model endpoint yet: `/ocr` arrives in slice 0.8, and the others with the Phase 1 slices that use them.
 - **Rules:** §9.1 (the only GPU user; no access to `data/`; "What the `models` image must contain").
-- **Test:** GPU. `/health` answers with a CUDA device from inside the container. The engine's client reads it through `MODELS_URL`. Inside the container, the pinned font family is listed and `cv2` imports.
+- **Test:** GPU. `/health` answers with a CUDA device from inside the container. The engine's client reads it through `MODELS_URL`. Inside the container, the pinned font family is listed and `cv2` imports. `/health` names a version for each thing it serves.
 - **Rests on:** check 7a (Docling and LightOnOCR passed inside a GPU container on 2026-10-04, once fonts and OpenCV's libraries were installed). The reranker and the sentiment classifier are still to measure; that is the rest of check 7, run in this image once it exists.
 
 ### 0.7 Test fixtures
@@ -68,16 +68,16 @@ Every slice of this phase is a substrate slice. What a slice is, its two kinds, 
 
 ### 0.8 LightOnOCR on the laptop GPU
 
-- **Must hold:** the `models` service gains `/ocr`. It loads LightOnOCR-2-1B on the laptop's GPU on first use and returns the text of a page image. The engine reaches it through the `OcrEngine` interface, which has a fake for tests. Deciding which pages go to OCR, and masking their pictures, is not here: that is slice 1.13.
+- **Must hold:** the `models` service gains `/ocr`. It loads LightOnOCR-2-1B on the laptop's GPU on first use and returns the text of a page image. The engine reaches it through the `OcrEngine` interface, which has a fake for tests. The service runs one GPU job at a time, and a request waits its turn. The wait and the model's first load count against the caller's timeout: either the client's timeout allows for them or the service is warmed up first, and this slice settles which. Deciding which pages go to OCR, and masking their pictures, is not here: that is slice 1.13.
 - **Rules:** §9.1 (the only GPU user; each model loads on first use); §8 (interfaces); §3 ("OCR routing is a measurement", for what the endpoint will serve).
-- **Test:** GPU. `/ocr` on a rasterised fixture page recovers at least 95% of the words of its text-layer twin. The model's GPU memory and the seconds per page are recorded. With the fake `OcrEngine`, the same engine call returns the fake's text with no service running.
+- **Test:** GPU. `/ocr` on a rasterised fixture page recovers at least 95% of the words of its text-layer twin. The model's GPU memory and the seconds per page are recorded. With the fake `OcrEngine`, the same engine call returns the fake's text with no service running. Two requests sent together are served one after the other and both succeed. The seconds the first call spends loading the model are recorded.
 - **Rests on:** check 7a (passed inside a GPU container on 2026-10-04: about 20 s a page, 2.5 GB held together with Docling, 5.3 GB at peak) and slices 0.6 and 0.7.
 
 ### 0.9 Durable runs
 
-- **Must hold:** every graph the `Engine` compiles gets the PostgreSQL checkpointer, whose tables live in their own schema, outside Alembic. What the budget has spent is part of the graph state, with the as-of date, the policy level and the settings hash the run started with. `engine.resume(run_id)` continues a run from its last completed step, and refuses when the settings hash or the git commit has changed. Sessions and the long-term store are not here: they arrive in Phase 5.
+- **Must hold:** every graph the `Engine` compiles gets the PostgreSQL checkpointer, whose tables live in their own schema, outside Alembic. What the budget has spent is part of the graph state, with the as-of date, the policy level and the settings hash the run started with. `engine.resume(run_id)` continues a run from its last completed step, and refuses when the settings hash or the git commit has changed. The setup step of slice 0.3 gains LangGraph's `setup()`, after the migrations, and the checkpointer's pool has a size in the settings. At its first call on a real database the engine checks that the database is at the version the code expects and that the embedding column has the size in the settings, and refuses to start otherwise. Sessions and the long-term store are not here: they arrive in Phase 5.
 - **Rules:** §13.1, §13.5; §5 (`Budget`); §8 (`Engine`, psycopg 3).
-- **Test:** integration, on `postgres`. A two-step graph killed after its first step resumes at the second and does not run the first again. The resumed run has the budget it had left. A sub-graph called from a node starts fresh on each call. A resume under a changed settings hash is refused. Unit tests use the in-memory saver.
+- **Test:** integration, on `postgres`. A two-step graph killed after its first step resumes at the second and does not run the first again. The resumed run has the budget it had left. A sub-graph called from a node starts fresh on each call. A resume under a changed settings hash is refused. An engine started against a database at another version, or with another embedding size in the settings, refuses with a message that names the difference. Unit tests use the in-memory saver.
 - **Rests on:** check 13, and slices 0.3 and 0.4.
 
 </details>

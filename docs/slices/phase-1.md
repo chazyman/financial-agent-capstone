@@ -35,9 +35,9 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 
 ### 1.1 Universe and first stored document
 
-- **Must hold:** `data/raw/ListEquities.csv` loads into `instruments`, 19 rows. Ingesting one plain text item for a ticker writes a `documents` row, one text chunk with its envelope, and an `ingest_runs` row holding its counts and the git commit.
-- **Rules:** §1; §7 (corpus tables, chunk envelope, "Every row says when it was known"); §12.2.
-- **Test:** end-to-end on fakes and `postgres`. The rows exist and point to each other. This slice also adds the database invariants every later end-to-end test reuses: every chunk and record points to its ingestion run, counts match `ingest_runs`, nothing is orphaned.
+- **Must hold:** `data/raw/ListEquities.csv` loads into `instruments`, 19 rows. Ingesting one plain text item for a ticker writes a `documents` row, one text chunk with its envelope, and an `ingest_runs` row holding its counts and the git commit. Outside the `instruments` table and the lookup that resolves a name, no code assumes that `instrument_id` is a ticker. The document's row, its chunk and the `ingest_runs` row are committed in one transaction, so a failed ingestion leaves nothing behind. The document and its chunk are tied to the instrument by a link that allows zero, one or several instruments; this slice settles how the link is stored.
+- **Rules:** §1; §7 (corpus tables, chunk envelope, "Every row says when it was known", "An item can concern several instruments"); §12.2.
+- **Test:** end-to-end on fakes and `postgres`. The rows exist and point to each other. An ingestion that fails before its commit leaves no row. This slice also adds the database invariants every later end-to-end test reuses: every chunk and record points to its ingestion run, counts match `ingest_runs`, nothing is orphaned.
 
 ### 1.2 Embedding
 
@@ -48,9 +48,9 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 
 ### 1.3 Search with predicates
 
-- **Must hold:** the predicates are applied as a `WHERE` clause, and two candidate lists are drawn from what survives: by vector similarity, and by full-text search over the text that was embedded, up to `retrieval.candidates_k` each. Predicates: ticker, document type, filing Item or section, `require_checkable`, the as-of date on `published_at`, superseded versions, and `injection_suspect`.
-- **Rules:** §4 ("Predicates come before similarity", "A section can be a predicate", "Two candidate lists, one pool", "Known by then, or not admissible"); §7 ("Exact search first").
-- **Test:** end-to-end on a seeded corpus with planted vectors. For each predicate, a chunk that is the closest match but fails the predicate is in neither list. A chunk published after the as-of date is not returned. A chunk holding an exact string the query names is in the pool even when its vector ranks outside it.
+- **Must hold:** the predicates are applied as a `WHERE` clause, and two candidate lists are drawn from what survives: by vector similarity, and by full-text search over the text that was embedded, up to `retrieval.candidates_k` each. Predicates: ticker, document type, filing Item or section, `require_checkable`, the as-of date on `published_at`, superseded versions, and `injection_suspect`. The ticker predicate reads the link of slice 1.1: a chunk linked to several instruments is found for each of them.
+- **Rules:** §4 ("Predicates come before similarity", "A section can be a predicate", "Two candidate lists, one pool", "Known by then, or not admissible"); §7 ("Exact search first", "An item can concern several instruments").
+- **Test:** end-to-end on a seeded corpus with planted vectors. For each predicate, a chunk that is the closest match but fails the predicate is in neither list. A chunk published after the as-of date is not returned. A chunk holding an exact string the query names is in the pool even when its vector ranks outside it. A chunk linked to two instruments is returned for either ticker, and a chunk linked to none is returned for no ticker.
 - **Rests on:** check 10, closed by slice 0.3.
 
 ### 1.4 Sufficiency gate and evidence set
@@ -75,7 +75,7 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 
 ### 1.7 Run record and tracing
 
-- **Must hold:** every `engine.answer()` call writes `runs`, `run_evidence` and `run_steps`, a stopped run included, before the answer is returned. The `runs` row is written when the run starts and completed when it ends, and each step names its loop. The `Tracer` is the only writer. One masked trace per call goes to Langfuse, tagged with the entry point, tickers and environment.
+- **Must hold:** every `engine.answer()` call writes `runs`, `run_evidence` and `run_steps`, a stopped run included, before the answer is returned. The `runs` row is written when the run starts and completed when it ends, and each step names its loop. The `Tracer` is the only writer. One masked trace per call goes to Langfuse, tagged with the entry point, tickers and environment. The node wrapper of slice 0.4 gains the tracing of each step.
 - **Rules:** §12 in full; §7 (record tables).
 - **Test:** end-to-end. A stopped run has its `runs` row, and a run killed midway leaves one that never reached `finished`. Each cited source has a `run_evidence` row whose hash matches. With Langfuse unreachable, the run completes and its record is stored. A planted key, and a payload from a masked source, never appear in an exported span.
 - **Rests on:** check 3 (passed) and check 11.
@@ -97,7 +97,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 
 ### 1.9 Parse a born-digital PDF
 
-- **Must hold:** the `models` service gains `/parse`. The `DocumentParser` interface returns typed elements with page, bounding box, caption and picture class. The service returns the Docling JSON without images, the Markdown and every crop; the `ArtifactStore` writes them, names each crop by its hash, never overwrites one, and returns a path relative to its root.
+- **Must hold:** the `models` service gains `/parse`. The `DocumentParser` interface returns typed elements with page, bounding box, caption and picture class. The service returns the Docling JSON without images, the Markdown and every crop; the `ArtifactStore` writes them, names each crop by its hash, never overwrites one, and returns a path relative to its root. Ingestion records in `ingest_runs` the versions that `/health` reports for what it used (slice 0.6).
 - **Rules:** §3 ("Parse into typed elements", "Crop, don't send the page", "Binary artifacts live on disk"); §9.1.
 - **Test:** end-to-end on the synthetic fixture with the fake parser. Every element kind reaches the store with its crop reference. No graph state and no record holds image bytes. Ingesting the same file twice leaves its crops untouched. A GPU test runs the real `/parse` on the fixture, inside the container, and finds the tables and headings the fixture's manifest lists: Docling degrades without a word when the image has no fonts (§9.1).
 - **Rests on:** check 4 (passed) and check 7a (passed).
