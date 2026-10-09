@@ -372,7 +372,7 @@ Two records are kept apart, so that "traceable to its source" still holds after 
 - **Traceability lives in PostgreSQL.** Every run stores its question, plan, answer, stop reason and the versions that produced it; the evidence exactly as it was read, with a hash; its step-by-step trajectory; and its scores. Every chunk and record points to the ingestion run that produced it.
 - **Observability lives in Langfuse Cloud:** traces, cost, latency and evaluation scores, with secrets and subscriber content masked before they leave the machine. It is a viewer, never the only place something is recorded.
 
-The stored trajectories and scores also leave the door open to a self-improving agent later, which is not in scope. Details: [DESIGN §12](docs/DESIGN.md#12-traceability-and-observability).
+The stored trajectories and scores also leave the door open to a self-improving agent later. Details: [DESIGN §12](docs/DESIGN.md#12-traceability-and-observability).
 
 ## 5. Roadmap
 
