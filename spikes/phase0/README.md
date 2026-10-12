@@ -2,10 +2,10 @@
 
 Each script here proves or disproves one assumption the design rests on, before any engine code depends on it. This file holds the rules of a script and the results. The loop a check follows is in [DESIGN §9.2](../../docs/DESIGN.md#92-development), and the order of the checks is the queue of each phase's slice file ([docs/slices/](../../docs/slices/)); neither is repeated here.
 
-- **Isolated.** A script declares its own dependencies in its header and runs in a disposable environment: `uv run <script>`. Nothing is installed into the project or the system; `uv cache clean` removes what was downloaded.
+- **Isolated.** A script declares its own dependencies in its header and runs with `uv run <script>` inside a disposable container (`docker run --rm`). The container sees this folder, read-only, and nothing else of the project. A service a check needs, such as PostgreSQL, runs in a second container on a private network. Nothing is installed into the project or the system; `uv cache clean` removes what was downloaded. Checks 1 to 6 ran before this rule, directly in WSL.
 - **Criterion first.** The pass criterion is written in the script's docstring before the script is run, and the script prints `RESULT: PASS` or `RESULT: FAIL` against it, with the library versions it used.
 - **A fallback for each.** A failure changes a line in the design; it does not stall the build.
-- **No secrets printed, no metered calls.** Keys are read from `.env`.
+- **No secrets printed, no metered calls.** The container does not see `.env`: the command that starts it reads the keys a check needs and passes them to that run only.
 - **A dated record, not a test.** A result holds for the versions and the date shown. Re-run a script when its dependency is upgraded. A script's file number is its check number. One row per assumption: when a script tests several, each takes a letter (13a, 13b). A new script pins a library an earlier check recorded to that version.
 
 ## Results
@@ -65,15 +65,34 @@ The laptop is not saturated by these two models, and the container costs neither
 
 ## Running one
 
+Every check runs inside a disposable container, started from this folder. This command is the standard from 2026-10-12. It has not been run yet: check 13 is the first to use it.
+
 ```bash
-uv run 01_langgraph_sync_node_under_async.py
-uv run 04_parse_response_size.py <path to a long filing PDF>
-OPENROUTER_API_KEY=... uv run 05_openrouter_image_embedding.py <path to a filing PDF> 23 25    # under a cent
-OPENROUTER_API_KEY=... uv run 06_deepeval_judge_openrouter.py <path to a filing PDF> 23       # under a cent
-TORCH_DISABLE_NATIVE_JIT=1 uv run 07a_gpu_docling_lightonocr.py <path to a long filing PDF>   # needs the GPU
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp -e UV_CACHE_DIR=/cache/uv \
+  -v "$HOME/.cache/uv":/cache/uv \
+  -v "$PWD":/spike:ro \
+  ghcr.io/astral-sh/uv:python3.12-bookworm-slim \
+  uv run /spike/<script> [arguments]
 ```
 
-Checks 4 to 7a need a PDF; the runs above used Apple's FY2025 10-K from its investor-relations site, where page 23 holds the stock performance chart. The first run of a script downloads its dependencies into uv's cache (about 2.5 GB for the first four, most of it Docling and CPU-only PyTorch; check 7a adds about 5 GB of GPU PyTorch, and the OCR model adds about 2 GB to `~/.cache/huggingface`).
+What a check adds to it:
+
+- **A PDF:** `-v "$PDF_DIR":/data:ro`, and the script is given `/data/<filing>.pdf`.
+- **A key:** `-e OPENROUTER_API_KEY="$(grep '^OPENROUTER_API_KEY=' ../../.env | cut -d= -f2-)"`. Only that key reaches the container, and the command prints nothing.
+- **The GPU:** `--gpus all`, with the fonts and libraries of "Check 7a inside a container" below.
+- **A service,** such as PostgreSQL: a second container on a private network. The exact command is in the script's docstring.
+
+| Script | Arguments | It adds |
+|---|---|---|
+| `01_langgraph_sync_node_under_async.py` | none | nothing |
+| `04_parse_response_size.py` | `/data/<a long filing>.pdf` | a PDF |
+| `05_openrouter_image_embedding.py` | `/data/<a filing>.pdf 23 25` | a PDF and the OpenRouter key; under a cent |
+| `06_deepeval_judge_openrouter.py` | `/data/<a filing>.pdf 23` | a PDF and the OpenRouter key; under a cent |
+| `07a_gpu_docling_lightonocr.py` | `/data/<a long filing>.pdf` | a PDF, the GPU and `-e TORCH_DISABLE_NATIVE_JIT=1` |
+
+Checks 4 to 7a need a PDF; the recorded runs used Apple's FY2025 10-K from its investor-relations site, where page 23 holds the stock performance chart. The first run of a script downloads its dependencies into uv's cache (about 2.5 GB for the first four, most of it Docling and CPU-only PyTorch; check 7a adds about 5 GB of GPU PyTorch, and the OCR model adds about 2 GB to `~/.cache/huggingface`).
 
 <details>
 <summary><b>Check 7a inside a container</b></summary>
