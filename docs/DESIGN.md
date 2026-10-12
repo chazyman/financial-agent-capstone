@@ -1315,12 +1315,12 @@ The course teaches memory as three layers and names PostgreSQL for it in product
 
 ### 13.1 Durable runs
 
-- **Every graph the `Engine` compiles is checkpointed.** The state is saved after each step. Unit tests use the in-memory saver; everything else uses PostgreSQL.
+- **Every graph the `Engine` compiles is checkpointed.** The state is saved after each step. Every run uses `durability="sync"`, so a step's checkpoint is written before the next step starts. LangGraph's default writes it while the next step runs, so a kill at that moment could lose it and `engine.resume()` would repeat the step. Unit tests use the in-memory saver; everything else uses PostgreSQL.
 - **One thread per unit of work.** The thread is the session id for `engine.ask()`, the run id for `engine.answer()` and `engine.retrieve()`, and the ingestion run id for `engine.ingest()`.
 - **`engine.resume(run_id)` continues from the last completed step.** It rebuilds the run context from what the run started with: the same as-of date and the same policy level. It refuses when the settings hash or the git commit has changed, so a run finishes under the rules it started with.
 - **What a resume needs is in the state:** the plan and the artifacts of the completed steps, the calculations, and what the budget has spent (§5).
 - **A step that was cut short runs again from its start,** so every step must be safe to repeat. Reads are. Ingestion is, because a repeat is recognised by its content hash (§7). A provider fetch is, because it checks freshness before each call (§2).
-- **Sub-agents keep no memory of their own.** A sub-agent's sub-graph uses LangGraph's default: it starts fresh on each call and inherits the parent's checkpointer. Its history stays private and is dropped when it returns (§5), yet a run interrupted inside it resumes there. Per-thread sub-agent memory is not used: it does not support parallel tool calls, and it would let a history outlive its brief.
+- **Sub-agents keep no memory of their own.** A sub-agent's sub-graph uses LangGraph's default: it starts fresh on each call and inherits the parent's checkpointer. Its history stays private and is dropped when it returns (§5), yet a run interrupted inside it resumes there. Per-thread sub-agent memory is not used: it does not support parallel tool calls, and it would let a history outlive its brief. A sub-graph keeps its own state schema and is called from a node, which returns the artifact and what the sub-graph spent. It never shares the parent's state keys: a shared key with an additive reducer counts the spend twice (check 13b, first run).
 - **Checkpoints are pruned.** Those of a finished thread are deleted after `memory.checkpoint_retention_days`. That is never longer than the shortest `cache_days` of an enabled provider, because a checkpoint holds the evidence a run read.
 
 ### 13.2 Session memory
@@ -1354,6 +1354,6 @@ The load node reads the preferences in full and the `memory.episodes_k` run reco
 
 ### 13.5 What it rests on
 
-- **One driver.** LangGraph's Postgres checkpointer and store need psycopg 3, so the engine's own stores use it too (§8). Their tables live in the `memory.schema` schema, created by their `setup()`, and Alembic ignores that schema.
+- **One driver.** LangGraph's Postgres checkpointer and store need psycopg 3, so the engine's own stores use it too (§8). Their tables live in the `memory.schema` schema. The setup step creates the schema first, and the checkpointer's connection sets `search_path` to it, because `setup()` has no schema argument and writes to the first schema of the path (check 13a). Alembic ignores that schema.
 - **An assumption check.** Check 13 (`spikes/phase0`) must pass before code depends on this section. If it fails, the fallback is the run record's `run_steps` as the resume log and tables of our own for preferences and run records.
 - **Phases.** The checkpointer and `engine.resume()` arrive in Phase 0, so every later graph is durable from its first slice. Sessions and the long-term store arrive with the supervisor graph in Phase 5.

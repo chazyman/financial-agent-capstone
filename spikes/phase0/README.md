@@ -25,10 +25,11 @@ Each script here proves or disproves one assumption the design rests on, before 
 | 10 | pgvector queries with SQL predicates, and a full-text candidate list under the same predicates, work through psycopg 3 from async SQLAlchemy | The `postgres` container | Not run | | Sync driver wrapped in a thread, behind the same async store methods |
 | 11 | A masked trace and its scores reach Langfuse, tagged with the slice and the git commit | Langfuse keys | Not run | | The run record in PostgreSQL alone; Langfuse stays optional |
 | 12 | Ragas' `TestsetGenerator` produces usable questions from our documents through OpenRouter | OpenRouter key | Not run | | DeepEval's `Synthesizer` |
-| 13a | LangGraph's Postgres checkpointer works beside our own stores: on psycopg 3, in its own schema, untouched by Alembic | The `postgres` container | Not run | | The run record's `run_steps` as the resume log |
-| 13b | A graph with a sub-graph and a run context resumes after its process is killed, without repeating a completed step | The `postgres` container | Not run | | The run record's `run_steps` as the resume log |
+| 13a | LangGraph's Postgres checkpointer works beside our own stores: on psycopg 3, in its own schema, untouched by Alembic | The `postgres` container | **Pass** (2026-10-12) | langgraph-checkpoint-postgres 3.1.2, psycopg 3.3.6, sqlalchemy 2.1.4, alembic 1.20.0. `setup()` made its 4 tables in the schema `memory` and none in `public`. Our own table works through async SQLAlchemy beside them. An Alembic create and drop left the row counts unchanged (10 checkpoints, 22 writes). Autogenerate proposes touching `memory` unless a schema filter skips it | The run record's `run_steps` as the resume log |
+| 13b | A graph with a sub-graph and a run context resumes after its process is killed, without repeating a completed step | The `postgres` container | **Pass** (2026-10-12), after a failed first run the same day | langgraph 1.2.12, langgraph-checkpoint 4.2.0. Three SIGKILL kills resumed: between parent steps, inside a sub-graph, and in the second visit to the same node. No completed step ran again, the cut-short step started twice and ended once, and the final spend and trail were exact. Saves used `durability="sync"`; the default was not tested. The first run failed (spend 6 instead of 5) because my test sub-graph shared the parent's state keys. That was a test fault and no step had repeated | The run record's `run_steps` as the resume log |
 | 13c | LangGraph's Postgres store works in the same schema, and its semantic search runs at our embedding dimensions | The `postgres` container | Not run | | Tables of our own for preferences and run records |
-| 13d | A node timeout exists on our LangGraph version | Nothing | Not run | | `asyncio.timeout` in a node wrapper |
+| 13d | A node timeout exists on our LangGraph version | Nothing | **Pass** (2026-10-12) | `add_node(timeout=0.3)` exists and raised `NodeTimeoutError` after 0.30 s; tried with a number only, not a `TimeoutPolicy`. `step_timeout` is a step-level setting. `asyncio.timeout` in a wrapper also stopped the node (0.31 s) | `asyncio.timeout` in a node wrapper |
+| 13e | A resume works across two levels of nesting: a node calls a sub-graph whose node calls an inner graph, as `retrieve` would | The `postgres` container | **Pass** (2026-10-12) | Kills between the levels and inside the inner graph both resumed. Completed work was not rerun at any level, `tool` and `i2` were cut short once each, and each level counted its spend once (6 in total) | Run the retrieval graph in a tool without checkpoints of its own, so a cut-short `retrieve` reruns whole |
 | 14 | The official MCP Python SDK can carry the TipRanks client: a tool call is never sent twice after a timeout or a dropped connection; a quota refusal reaches the caller as an error it can tell from any other; the handshake and the catalogue cost no metered call | A local fake MCP server for the first two; the network and the free usage counter for the third. No metered call | Not run | | Our own JSON-RPC calls over an HTTP client, as the 2026-10-03 check made with `curl` |
 
 ## Check 7a: Docling and LightOnOCR on the laptop GPU
@@ -65,7 +66,7 @@ The laptop is not saturated by these two models, and the container costs neither
 
 ## Running one
 
-Every check runs inside a disposable container, started from this folder. This command is the standard from 2026-10-12. It has not been run yet: check 13 is the first to use it.
+Every check runs inside a disposable container, started from this folder. This command is the standard from 2026-10-12. It ran for the first time on 2026-10-12, for check 13.
 
 ```bash
 docker run --rm \
@@ -82,7 +83,7 @@ What a check adds to it:
 - **A PDF:** `-v "$PDF_DIR":/data:ro`, and the script is given `/data/<filing>.pdf`.
 - **A key:** `-e OPENROUTER_API_KEY="$(grep '^OPENROUTER_API_KEY=' ../../.env | cut -d= -f2-)"`. Only that key reaches the container, and the command prints nothing.
 - **The GPU:** `--gpus all`, with the fonts and libraries of "Check 7a inside a container" below.
-- **A service,** such as PostgreSQL: a second container on a private network. The exact command is in the script's docstring.
+- **A service,** such as PostgreSQL: a second container on a private network, and `--network <name>` on the command above. The exact commands are in the script's docstring.
 
 | Script | Arguments | It adds |
 |---|---|---|
@@ -91,6 +92,7 @@ What a check adds to it:
 | `05_openrouter_image_embedding.py` | `/data/<a filing>.pdf 23 25` | a PDF and the OpenRouter key; under a cent |
 | `06_deepeval_judge_openrouter.py` | `/data/<a filing>.pdf 23` | a PDF and the OpenRouter key; under a cent |
 | `07a_gpu_docling_lightonocr.py` | `/data/<a long filing>.pdf` | a PDF, the GPU and `-e TORCH_DISABLE_NATIVE_JIT=1` |
+| `13_langgraph_postgres_checkpointer.py` | the database URL | a PostgreSQL container on a private network |
 
 Checks 4 to 7a need a PDF; the recorded runs used Apple's FY2025 10-K from its investor-relations site, where page 23 holds the stock performance chart. The first run of a script downloads its dependencies into uv's cache (about 2.5 GB for the first four, most of it Docling and CPU-only PyTorch; check 7a adds about 5 GB of GPU PyTorch, and the OCR model adds about 2 GB to `~/.cache/huggingface`).
 
