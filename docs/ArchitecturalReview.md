@@ -19,6 +19,7 @@ A review held before the first coding session, started on 2026-10-09. It checks 
 | 5 | The lock-ins of Phase 0: the two contexts, async on psycopg 3, the database split, the `models` service boundary, the `Engine` API | Keep all five; a lifecycle is added to `Engine` | Decided 2026-10-09; written in the slice files and DESIGN §7 and §8 |
 | 6 | What the capstone includes: the agents, the provider, memory | Keep all: nothing is cut or deferred | Decided 2026-10-09 |
 | 7 | News that is not about one instrument: market and economic news, and items about several | Store, link and show as context; no modelling of impact | Decided 2026-10-09; the Phase 1 part is written in DESIGN §7 and slices 1.1 and 1.3, the Phase 2 part is parked |
+| 8 | The workflow around slices and assumption checks: where status and the order of work are written, and the loop of a check | Change: each fact has one home, and a check gets a loop of its own | Decided 2026-10-12; written in DESIGN §9.2, PROPOSAL §6, the slice files and `spikes/phase0/README.md` |
 
 
 ## 1. The status of the Phase 2 to 5 detail
@@ -86,3 +87,26 @@ A review held before the first coding session, started on 2026-10-09. It checks 
 - One line in PROPOSAL §3 for the new source.
 - DESIGN §6 still says an item is tagged to a ticker; it follows the link when Phase 2 is sliced.
 - Two limits, accepted: a link across sectors depends on an article naming both instruments, and the provenance check does not verify that a cited article states a cause.
+
+## 8. The workflow around slices and assumption checks
+
+**Question.** At the first code session (2026-10-11) the open items and `spikes/phase0/README.md` disagreed on when check 13 runs. Is that one stale line, or the process?
+
+**What was found.** The process.
+- A check's status and the order of work were written in about ten places in five files: the spike README, `slices/phase-0.md`, DESIGN.md, the course map and the open items.
+- A check had no loop of its own. Nothing said who approves its criterion, what a result must update, or what its commit holds.
+- No rule said when a check runs. For checks 9 and 11 and the rest of check 7, the slice file said before Phase 0 closes, and the spike README said before slices 1.13, 1.7 and 1.16.
+- One check number held several assumptions. Check 13 had four, serving slice 0.9, slice 0.4 and Phase 5, and check 7 was "half done".
+- The versions the checks ran on were not tied to the lockfile of slice 0.1.
+
+**Decision** (2026-10-11 and 2026-10-12). Change, in eight points:
+- The queue of a phase is the table of its slice file: its slices and its checks, in the order they are done. It is the only place that states that order and a slice's status.
+- A check's result is written in the spike README only. Its row in the queue gives its position and a link.
+- A check follows a loop: its criterion approved before the run, the run, the record, and one commit of its own.
+- The checks that gate Phase 1 slices run in Phase 0, as early as what each needs exists.
+- One result per assumption. Check 13 becomes 13a to 13d, and check 7 becomes 7a and 7b.
+- 13a covers the checkpointer only. Everything about the long-term store, its tables included, waits with 13c until Phase 5 is sliced.
+- `pyproject.toml` pins each library a check ran on to the version the check recorded (slice 0.1).
+- The spike README's schedule, its Status paragraph and its "What is left" table, is removed, and the status words in the other files with it.
+
+Written on 2026-10-12.

@@ -391,6 +391,7 @@ Each phase of the roadmap is built one slice at a time. A slice is a single beha
 
 ```mermaid
 flowchart TB
+    CHECK["Assumption check<br/>an isolated script; its pass criterion approved first"]
     SPEC["Spec<br/>one slice: a behaviour at an engine entry point"]
     TEST["Test, written first<br/>unit or end-to-end; seen to fail"]
     CODE["Code<br/>until the test passes"]
@@ -400,6 +401,7 @@ flowchart TB
     CLOSE["Phase close<br/>evaluation run on the real models against the baseline;<br/>notebook run from top to bottom"]
     WRONG["Wrong spec<br/>assess the impact, find the rollback point,<br/>correct the spec"]
 
+    CHECK -->|"proved, or its fallback written into the spec"| SPEC
     SPEC --> TEST --> CODE --> GATE
     GATE -->|pass| COMMIT --> MORE
     GATE -->|"the code is wrong"| CODE
@@ -407,8 +409,10 @@ flowchart TB
     MORE -->|yes| SPEC
     MORE -->|no| CLOSE
     CLOSE -.->|"a shift nobody intended"| WRONG
+    WRONG -.->|"an unproven dependency"| CHECK
 ```
 
+- **An assumption is proved before code rests on it.** A behaviour of a dependency that a slice relies on is first checked by an isolated script, with its pass criterion approved before it runs. A check runs as early as what it needs exists, and before the first slice that rests on it, so a failed one changes the spec before code depends on it.
 - **The gate is fast and free.** It runs on fakes: the slice's own test, every earlier slice of the phase and the earlier phases. It also checks that data stays consistent, that two runs at once don't interfere, and that nothing got slower.
 - **A phase closes on the real models.** Each question keeps a baseline of its evidence, path, scores, time and cost, and the closing run is compared with it (Section 7). A slice that changes what a model sees or writes gets the same run at its own gate.
 - **A wrong spec sends the work back, not forward.** Either a dependency behaved differently than assumed, or a design choice did not hold. Work returns to the last slice whose code is still correct, the spec is corrected first, and slicing restarts from there.

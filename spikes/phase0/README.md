@@ -1,16 +1,12 @@
 # Phase 0 checks
 
-Each script here proves or disproves one assumption the design rests on, before any engine code depends on it.
+Each script here proves or disproves one assumption the design rests on, before any engine code depends on it. This file holds the rules of a script and the results. The loop a check follows is in [DESIGN §9.2](../../docs/DESIGN.md#92-development), and the order of the checks is the queue of each phase's slice file ([docs/slices/](../../docs/slices/)); neither is repeated here.
 
 - **Isolated.** A script declares its own dependencies in its header and runs in a disposable environment: `uv run <script>`. Nothing is installed into the project or the system; `uv cache clean` removes what was downloaded.
 - **Criterion first.** The pass criterion is written in the script's docstring before the script is run, and the script prints `RESULT: PASS` or `RESULT: FAIL` against it, with the library versions it used.
 - **A fallback for each.** A failure changes a line in the design; it does not stall the build.
 - **No secrets printed, no metered calls.** Keys are read from `.env`.
-- **A dated record, not a test.** A result holds for the versions and the date shown. Re-run a script when its dependency is upgraded. A script's file number is its check number.
-
-## Status
-
-Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 14 are not run. Check 13 must pass before slice 0.9; none of the other open checks blocks a Phase 0 slice.
+- **A dated record, not a test.** A result holds for the versions and the date shown. Re-run a script when its dependency is upgraded. A script's file number is its check number. One row per assumption: when a script tests several, each takes a letter (13a, 13b). A new script pins a library an earlier check recorded to that version.
 
 ## Results
 
@@ -22,27 +18,18 @@ Checks 1 to 6 and 7a have passed. Check 7 is half done, and checks 8 to 14 are n
 | 4 | A parse answer carrying every crop of a long filing stays a workable size | Docling on CPU | **Pass, with a change** (2026-10-03) | docling 2.133.0 on Apple's 80-page FY2025 10-K: 7.7 MB in total (52 table and 2 picture crops 4.9 MB, JSON 2.5 MB, Markdown 0.35 MB); 102 s on CPU | Compress the answer, or keep a shared folder |
 | 5 | OpenRouter embeds an image with Gemini Embedding 2, in the same space as text | OpenRouter key | **Pass** (2026-10-04) | `google/gemini-embedding-2` returns normalised vectors of 1536 values for a text, a PNG, and a crop with its text together, with `data_collection: deny`. A question ranks the right page image first (0.49 against 0.34). 258 tokens an image; $0.0004 for six items | The local embedder named in PROPOSAL §8.1 |
 | 6 | A DeepEval judge on OpenRouter separates a correct answer from one with a wrong figure, by more than its own run-to-run noise; it scores a case whose context is an image; what a run costs | OpenRouter key | **Pass** (2026-10-04) | deepeval 4.2.8, judge `google/gemini-2.5-flash-lite`. The correct answer scored 1.0 three times on faithfulness and on G-Eval; the wrong figure scored 0.0 on both. The image case scored 1.0 against 0.0. 24 s, $0.0006 | Judge text only; chart cases rely on hard checks |
-| 7 | The four GPU models fit in 16 GB inside the `models` container | Docker and the GPU | **Half done** (2026-10-04): Docling and LightOnOCR pass inside a GPU container | See "Check 7a" below. The reranker and the sentiment classifier are not measured | `models_service.idle_unload_seconds` |
+| 7a | Docling and LightOnOCR fit in 16 GB inside a GPU container | Docker and the GPU | **Pass** (2026-10-04) | See "Check 7a" below | `models_service.idle_unload_seconds` |
+| 7b | The reranker and the sentiment classifier fit beside them, all four models loaded | The `models` image of slice 0.6 | Not run | | `models_service.idle_unload_seconds` |
 | 8 | The Stooq, Stockanalysis and SPDR downloads work within their terms | Network | Not run | | Alternative sources |
 | 9 | Docling's layout model finds the picture boxes on an image-only page, so they can be masked before OCR | The GPU | Not run | | OCR each layout region separately |
 | 10 | pgvector queries with SQL predicates, and a full-text candidate list under the same predicates, work through psycopg 3 from async SQLAlchemy | The `postgres` container | Not run | | Sync driver wrapped in a thread, behind the same async store methods |
 | 11 | A masked trace and its scores reach Langfuse, tagged with the slice and the git commit | Langfuse keys | Not run | | The run record in PostgreSQL alone; Langfuse stays optional |
-| 12 | Ragas' `TestsetGenerator` produces usable questions from our documents through OpenRouter | OpenRouter key; needed at the start of Phase 4 | Not run | | DeepEval's `Synthesizer` |
-| 13 | LangGraph's Postgres checkpointer and store work beside our own stores: on psycopg 3, in their own schema, untouched by Alembic. A graph with a sub-graph and a run context resumes after its process is killed, without repeating a completed step. The store's semantic search runs at our embedding dimensions. A node timeout exists on our LangGraph version | The `postgres` container | Not run | | The run record's `run_steps` as the resume log, and tables of our own for preferences and run records; `asyncio.timeout` in a node wrapper |
+| 12 | Ragas' `TestsetGenerator` produces usable questions from our documents through OpenRouter | OpenRouter key | Not run | | DeepEval's `Synthesizer` |
+| 13a | LangGraph's Postgres checkpointer works beside our own stores: on psycopg 3, in its own schema, untouched by Alembic | The `postgres` container | Not run | | The run record's `run_steps` as the resume log |
+| 13b | A graph with a sub-graph and a run context resumes after its process is killed, without repeating a completed step | The `postgres` container | Not run | | The run record's `run_steps` as the resume log |
+| 13c | LangGraph's Postgres store works in the same schema, and its semantic search runs at our embedding dimensions | The `postgres` container | Not run | | Tables of our own for preferences and run records |
+| 13d | A node timeout exists on our LangGraph version | Nothing | Not run | | `asyncio.timeout` in a node wrapper |
 | 14 | The official MCP Python SDK can carry the TipRanks client: a tool call is never sent twice after a timeout or a dropped connection; a quota refusal reaches the caller as an error it can tell from any other; the handshake and the catalogue cost no metered call | A local fake MCP server for the first two; the network and the free usage counter for the third. No metered call | Not run | | Our own JSON-RPC calls over an HTTP client, as the 2026-10-03 check made with `curl` |
-
-## What is left, in priority order
-
-| Priority | Check | When | Why this order |
-|---|---|---|---|
-| 1 | 10. pgvector through the async driver | With slice 0.3, in Phase 0 | It is that slice's own test, and every store depends on the driver |
-| 2 | 13. LangGraph's checkpointer and store in PostgreSQL | With the container of slice 0.3, before slice 0.9 | Checkpointing and memory are required (DESIGN §13), and the driver chosen in slice 0.3 has to suit them |
-| 3 | 8. The three downloads | At the start of the next session. Needs only the network | It costs nothing, and a failure changes the data sources (DESIGN §1, §2). Blocks slice 1.14 |
-| 4 | 11. A masked trace reaches Langfuse | Before slice 1.7. Needs the Langfuse keys in `.env` | Slice 1.7 is the first Phase 1 slice that waits on a check. A failure costs little: the run record is in PostgreSQL |
-| 5 | 9. Docling finds picture boxes on an image-only page | Before slice 1.13. Can run now that containers reach the GPU | The rule that keeps a model's reading of a picture out of the text rests on it (DESIGN §3) |
-| 6 | 7, the rest. Reranker and sentiment classifier, all four models loaded | Once the `models` image exists (slice 0.6), before slice 1.16 | Low risk: two models peak at 5.3 GB of 16 GB |
-| 7 | 14. The MCP SDK under the TipRanks client | Before the first Phase 2 slice that fetches from a provider. Needs no key for two of its three parts | The client must never repeat a metered call (DESIGN §2), and the SDK's documentation says nothing about retries or about how a refusal surfaces |
-| 8 | 12. Ragas generates questions | At the start of Phase 4 | Nothing needs it before the question set is generated |
 
 ## Check 7a: Docling and LightOnOCR on the laptop GPU
 

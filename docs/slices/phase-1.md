@@ -44,7 +44,7 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 - **Must hold:** each chunk is embedded through the `Embedder` interface, as text, as a crop, or as both together, and stored in `chunks.embedding`. `ingest_runs` records the embedding model.
 - **Rules:** §3 ("Visual elements are embedded as crop + text together"); §8 (interfaces are multimodal by contract).
 - **Test:** end-to-end with the fake embedder. Every chunk has a vector of the configured size.
-- **Rests on:** check 5 (passed).
+- **Rests on:** check 5.
 
 ### 1.3 Search with predicates
 
@@ -64,21 +64,21 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 - **Must hold:** `engine.answer(question, as_of)` retrieves, drafts a `Draft` of claims as structured output, and returns them with citations: source, anchor, dates, source-truth coefficient, and the as-of date in the footer. Every claim cites a retrieved chunk. The scripted chat model for tests exists, and the graph calls whichever chat model the context holds. The run controls around that model are not here: they arrive in slice 1.6. Nor is the provenance gate, which arrives in Phase 3.
 - **Rules:** §4 (as-of rules, "Every citation shows its source truth"); §5 (`draft_claims`, `RunResult`, `StopReason`); §7 (a claim's source is flat for the model, typed for the verifier); §8 (the chat model's fake is a scripted model).
 - **Test:** end-to-end with the scripted chat model. A scripted draft comes back with resolved citations. A claim citing a chunk that was not retrieved is rejected. Two questions asked at once each get their own answer and neither blocks the other.
-- **Rests on:** check 2 (passed).
+- **Rests on:** check 2.
 
 ### 1.6 Run controls around the chat model
 
 - **Must hold:** one wrapper around any `BaseChatModel` counts model calls and cost against the run's `Budget`, switches to the fallback model on failure, and reports each call to the recorder. A structured output that fails its schema is asked for again with the error, up to `policy.max_validation_retries` times per model, and the run then stops with `invalid_output`. A failed call is retried as its failure class allows. The context holds the wrapped model, so the answer graph of slice 1.5 goes through the wrapper unchanged, and so does the scripted chat model.
 - **Rules:** §5 ("`Budget`", "Model fallback", "A model output that fails its schema"); §4 ("Retries follow the failure class"); §8 ("Run controls wrap the chat model").
 - **Test:** end-to-end at `engine.answer()` with the scripted chat model. A run whose model calls exceed the limit ends in `budget_exhausted`. A scripted primary that fails hands over to the fallback, the question is still answered, and the switch is recorded. A scripted model that returns an invalid `Draft`, then a valid one, answers within the limit; one that never returns a valid one ends in `invalid_output`. A transient failure is retried and a refusal is not.
-- **Rests on:** check 2 (passed) and slice 1.5.
+- **Rests on:** check 2 and slice 1.5.
 
 ### 1.7 Run record and tracing
 
 - **Must hold:** every `engine.answer()` call writes `runs`, `run_evidence` and `run_steps`, a stopped run included, before the answer is returned. The `runs` row is written when the run starts and completed when it ends, and each step names its loop. The `Tracer` is the only writer. One masked trace per call goes to Langfuse, tagged with the entry point, tickers and environment. The node wrapper of slice 0.4 gains the tracing of each step.
 - **Rules:** §12 in full; §7 (record tables).
 - **Test:** end-to-end. A stopped run has its `runs` row, and a run killed midway leaves one that never reached `finished`. Each cited source has a `run_evidence` row whose hash matches. With Langfuse unreachable, the run completes and its record is stored. A planted key, and a payload from a masked source, never appear in an exported span.
-- **Rests on:** check 3 (passed) and check 11.
+- **Rests on:** check 3 and check 11.
 
 ### 1.8 Behaviour baseline
 
@@ -86,7 +86,7 @@ Every slice of this phase is a vertical slice. What a slice is, its two kinds, i
 - **Rules:** §11 ("Retrieval and answer quality", "Questions that must not be answered", "Behaviour shift"); §12.1 (`case_id`, the baseline, `run_scores`).
 - **Test:** unit, on stored runs. A changed evidence set, a changed path, a slower run and a lower judged score are each reported as a shift. A case that was answered when it had to stop fails its hard check, and so does one that stopped when it had an answer; both rates are reported. A drop within the tolerance is not. An intended shift, once accepted, becomes the baseline.
 - **Evaluation run at its gate:** yes. It sets the first baseline, on the thin text path.
-- **Rests on:** check 6 (passed).
+- **Rests on:** check 6.
 
 </details>
 
@@ -100,7 +100,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 - **Must hold:** the `models` service gains `/parse`. The `DocumentParser` interface returns typed elements with page, bounding box, caption and picture class. The service returns the Docling JSON without images, the Markdown and every crop; the `ArtifactStore` writes them, names each crop by its hash, never overwrites one, and returns a path relative to its root. Ingestion records in `ingest_runs` the versions that `/health` reports for what it used (slice 0.6).
 - **Rules:** §3 ("Parse into typed elements", "Crop, don't send the page", "Binary artifacts live on disk"); §9.1.
 - **Test:** end-to-end on the synthetic fixture with the fake parser. Every element kind reaches the store with its crop reference. No graph state and no record holds image bytes. Ingesting the same file twice leaves its crops untouched. A GPU test runs the real `/parse` on the fixture, inside the container, and finds the tables and headings the fixture's manifest lists: Docling degrades without a word when the image has no fonts (§9.1).
-- **Rests on:** check 4 (passed) and check 7a (passed).
+- **Rests on:** check 4 and check 7a.
 
 ### 1.10 Text chunks under their heading path
 
@@ -125,7 +125,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 - **Must hold:** a page goes to OCR when its text layer is thin and a raster image covers most of it. The count is taken on the PDF's own text layer, and every page is counted, empty ones included. The picture boxes are masked before OCR, which runs through the `/ocr` endpoint and the `OcrEngine` interface of slice 0.8. OCR text becomes `lighton_ocr` chunks; what the OCR model writes for a picture's crop becomes an `ocr_picture_text` chunk linked to the picture, at a lower confidence, never quotable.
 - **Rules:** §3 ("OCR routing is a measurement", "A model's reading of a picture is never text").
 - **Test:** unit for the routing decision, which is a control. End-to-end with the fake OCR engine: every page of the image-only fixture is routed; a born-digital page holding only a chart and a table is not; the page text holds nothing from inside a picture's box. A GPU test measures real OCR accuracy on the rasterised filing pages against their text layer.
-- **Rests on:** slice 0.8, check 7a (passed) and check 9.
+- **Rests on:** slice 0.8, check 7a and check 9.
 
 ### 1.14 Acquisition without an agent
 
@@ -151,7 +151,7 @@ Each slice in this group changes the evidence a model reads, so each has an eval
 - **Rules:** §4 ("Modality normalisation", "Source truth weighs the order", "Source truth can be a floor").
 - **Test:** end-to-end with the fake reranker. With normalisation on, the best table rises into the top results where it did not before. A filing passage outranks a third-party passage of equal relevance, and a weight of 0 restores the order by relevance. With the floor set, the weaker source is not retrieved.
 - **Evaluation run at its gate:** yes. This is the slice the baseline of 1.8 exists to measure.
-- **Rests on:** the rest of check 7 (the reranker fits on the GPU beside the other models). Check 5 measured the gap this slice corrects: a question scored 0.67 against a matching sentence and 0.49 against the matching image.
+- **Rests on:** check 7b (the reranker fits on the GPU beside the other models). Check 5 measured the gap this slice corrects: a question scored 0.67 against a matching sentence and 0.49 against the matching image.
 
 </details>
 

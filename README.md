@@ -2,7 +2,7 @@
 
 Capstone for the *Agentic AI for Finance* course. A multimodal RAG pipeline and agent that answers analyst-style questions over filings, fund documents, CSVs, news and analyst ratings, with every figure traceable to its source.
 
-**Status:** design phase. Phase 0 will scaffold the Python AI engine and the Jupyter notebooks that wrap it.
+**Status:** see the queue of each phase in [docs/slices/](docs/slices/), starting with [Phase 0](docs/slices/phase-0.md), which scaffolds the Python AI engine and the Jupyter notebooks that wrap it.
 
 ## Documents
 
@@ -22,6 +22,7 @@ Reviews of the project's design and process, newest at the bottom.
 |---|---|---|---|
 | 2026-10-09 | Design document bloat and process review: `docs/DESIGN.md` had grown to about 28,000 words before any code existed | The text for a phase that is not yet sliced is a draft. When work on the phase starts, it is corrected once and compacted: each rule and its reason stay, and the detail moves to the phase's slice file | [Architectural Review](docs/ArchitecturalReview.md), topic 1; [DESIGN §9.3](docs/DESIGN.md#93-phases-and-their-slices) |
 | 2026-10-09 | Architectural review before the first coding session: are the choices that Phase 0 and Phase 1 code will lock in the right ones? | All five lock-ins are kept, and `Engine` gains a lifecycle for its resources. A document, a chunk and a news item can concern zero, one or several instruments. Market and economic news will be stored and shown as context, with no modelling of impact; that part waits for Phase 2 | [Architectural Review](docs/ArchitecturalReview.md), topics 2 to 7; [slices](docs/slices/) |
+| 2026-10-12 | Process review at the first code session: the open items and the spike README disagreed on when a check runs, and a check's status was written in about ten places | Each fact has one home: the order of work and a slice's status in the phase's queue, a check's result in the spike README. A check gets a loop of its own, and runs as early as what it needs exists | [Architectural Review](docs/ArchitecturalReview.md), topic 8; [DESIGN §9.2](docs/DESIGN.md#92-development) |
 
 ## Getting started
 
