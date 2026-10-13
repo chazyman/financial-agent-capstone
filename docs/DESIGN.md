@@ -23,7 +23,7 @@ Companion to [PROPOSAL.md](../PROPOSAL.md). The proposal covers what the capston
 | SEC filings (10-K / 10-Q / 8-K): documents → chunks; XBRL facts → `financial_facts` | Yes | No (ETFs don't file 10-Ks or 10-Qs) |
 | IR decks, earnings-call transcripts | Yes | No |
 | Fund documents (fact sheet, prospectus, annual report PDFs from the issuer) | No | Yes, parsed as fund-level documents; fund fields (expense ratio, AUM, …) become `financial_facts` rows; holdings tables are not expanded |
-| Daily prices from a price API (Tiingo, with Twelve Data as the fallback) → `prices` | Prices | Prices |
+| Daily prices from a price API (Twelve Data, with Tiingo as the fallback) → `prices` | Prices | Prices |
 | Analyst ratings and consensus, from an optional provider: TipRanks, through its MCP server (§2) | Rating actions and consensus | Consensus and price target only, as TipRanks computes them for the fund |
 | AI model ratings, from the same provider: the six of TipRanks' AI stock analysis (§6) | Yes | No (the tool covers stocks) |
 | Bull and bear points and a catalyst summary, from the same provider (§6) | Yes | No (both tools are described for stocks, and neither has been called yet) |
@@ -710,7 +710,7 @@ flowchart TB
     M["models (NVIDIA GPU)<br/>Docling /parse, LightOnOCR /ocr,<br/>Qwen3-VL-Reranker /rerank,<br/>sentiment classifier /sentiment"]
     PG[("postgres<br/>pgvector chunks + typed records<br/>+ run and ingestion records<br/>+ checkpoints and memory")]
     OR["OpenRouter<br/>agent LLM, vision model, embeddings"]
-    EXT["Sources<br/>SEC, IR, SPDR, Tiingo, Twelve Data, Exa"]
+    EXT["Sources<br/>SEC, IR, SPDR, Twelve Data, Tiingo, Exa"]
     TR["TipRanks MCP<br/>optional provider"]
     LF["Langfuse Cloud<br/>masked traces + scores"]
 
@@ -1082,7 +1082,7 @@ templates:                   # per instrument type; {placeholders} come from the
     sec_companyfacts: https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json
   ETF:
     fund_documents: <SPDR fund page pattern>
-  # prices come from the price-API backends (Tiingo, Twelve Data), not from URL templates
+  # prices come from the price-API backends (Twelve Data, Tiingo), not from URL templates
 
 overrides:                   # per instrument
   AAPL: {ir_page: https://investor.apple.com}
@@ -1097,7 +1097,7 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   company_ir: 10             # annual reports, decks and press releases issued by the company
   fund_documents: 10         # the issuer's fact sheets, prospectuses and annual reports
   transcript: 8
-  prices: 8                  # third-party data (Tiingo, Twelve Data)
+  prices: 8                  # third-party data (Twelve Data, Tiingo)
   analyst_ratings: 7         # a provider's rating actions and its own consensus (TipRanks)
   analyst_report: 6          # third-party, AI-written reports such as TipRanks' AI analyst report
   ai_analysis: 6             # the six model ratings of TipRanks' AI stock analysis

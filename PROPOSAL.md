@@ -89,7 +89,7 @@ ETFs are single instruments: their holdings are never fetched. Equities get SEC 
 | [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) | 10-K / 10-Q / 8-K filings and their structured XBRL data | Narrative and tabular disclosures; reported figures from XBRL, the facts of record |
 | Company investor-relations pages | Annual reports, earnings decks, press releases (PDF/HTML) | Multimodal text + tables + charts; company news |
 | State Street SPDR fund pages | Fact sheets, prospectuses, annual reports (PDF) | Fund-level documents for the 11 ETFs |
-| [Tiingo](https://www.tiingo.com) (primary) / [Twelve Data](https://twelvedata.com) (fallback) | Daily prices through their APIs, one free key each | Structured figures to cross-check filings and charts; one year of daily prices for 1-week, 1-month and 3-month trends |
+| [Twelve Data](https://twelvedata.com) (primary) / [Tiingo](https://www.tiingo.com) (fallback) | Daily prices through their APIs, one free key each | Structured figures to cross-check filings and charts; one year of daily prices for 1-week, 1-month and 3-month trends |
 | [TipRanks](https://www.tipranks.com) (subscriber; optional) | Analysts' rating actions, its own consensus, the six model ratings of its AI stock analysis, bull and bear points and a catalyst summary, via its MCP server | Enriches the market brief: analyst consensus computed in code, the rest reported apart. Fetched on demand, metered, and cached under its terms of use |
 | Third-party analyst report PDFs, supplied by hand | Two-column cards, borderless tables, vector charts | A demanding layout for Docling; third-party figures are weighed below filings |
 | [Exa](https://exa.ai) search API | Agentic web search: third-party news articles and public pages | Secondary coverage per ticker, ingested into the corpus |
@@ -141,7 +141,7 @@ flowchart TB
     MS["models service on the laptop GPU<br/>Docling /parse · LightOnOCR /ocr<br/>Qwen3-VL-Reranker /rerank · sentiment /sentiment"]
     OR["OpenRouter<br/>chat, vision, embeddings, judge"]
     TM["TipRanks MCP server (optional)<br/>analyst views, on demand"]
-    WEB["Exa search · SEC · IR pages · SPDR · Tiingo · Twelve Data"]
+    WEB["Exa search · SEC · IR pages · SPDR · Twelve Data · Tiingo"]
     RQ[("Redis job queue")]
     LF["Langfuse Cloud<br/>masked traces and scores"]
 

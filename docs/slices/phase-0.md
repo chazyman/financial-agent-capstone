@@ -12,6 +12,7 @@ This table is the phase's queue ([DESIGN §9.2](../DESIGN.md#92-development)): i
 |---|---|---|---|
 | Check 13a, 13b, 13d, 13e | LangGraph's Postgres checkpointer works beside our own stores, a killed run resumes at every level of nesting, and a node can be timed out | Assumption check | [Result](../../spikes/phase0/README.md#results) |
 | Check 8 | The Stooq, Stockanalysis and SPDR downloads work within their terms | Assumption check | [Result](../../spikes/phase0/README.md#results) |
+| Check 16 | Twelve Data and Tiingo deliver daily prices for the 19 instruments on free keys, within their terms | Assumption check | [Result](../../spikes/phase0/README.md#results) |
 | Check 9 | Docling finds the picture boxes on an image-only page | Assumption check | [Result](../../spikes/phase0/README.md#results) |
 | Check 11 | A masked trace and its scores reach Langfuse | Assumption check | [Result](../../spikes/phase0/README.md#results) |
 | 0.1 Package skeleton | The `uv` environment builds; `finrag_engine` imports; `pytest` with its async plugin and `ruff` run | Unit | Not started |
