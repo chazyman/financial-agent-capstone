@@ -10,7 +10,7 @@
 ## 1. Summary
 
 This capstone builds a **financial AI agent assistant** that answers analyst-style questions about ETFs and equities, with every figure traceable to its source. It is a multimodal Retrieval-Augmented Generation (RAG) system with two pipelines:
-- an **ingestion** pipeline builds the corpus from curated downloads and agent-driven web search over PDFs (text, tables and charts), web pages, CSV files, news and analyst ratings;
+- an **ingestion** pipeline builds the corpus from curated downloads and agent-driven web search over PDFs (text, tables and charts), web pages, daily price data, news and analyst ratings;
 - a **retrieval** pipeline answers from that corpus only.
 
 The target is a **supervised multi-agent LangGraph system**, built incrementally. Phases 1–4 build and evaluate the two pipelines. Phase 5 wraps them as sub-agents under a supervisor with safety guardrails, so nothing built earlier is thrown away.
@@ -30,7 +30,7 @@ The build phases apply the course material day by day:
 
 ## 2. Problem and Goal
 
-Financial analysis draws on heterogeneous sources: PDF filings and reports, investor-relations pages, CSV fundamentals and charts. Naive single-shot RAG breaks down on them for three reasons:
+Financial analysis draws on heterogeneous sources: PDF filings and reports, investor-relations pages, structured XBRL data and charts. Naive single-shot RAG breaks down on them for three reasons:
 - layouts are table-heavy;
 - claims must be cited precisely;
 - answers need both **narrative text** and **exact numbers**.
@@ -89,7 +89,7 @@ ETFs are single instruments: their holdings are never fetched. Equities get SEC 
 | [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) | 10-K / 10-Q / 8-K filings and their structured XBRL data | Narrative and tabular disclosures; reported figures from XBRL, the facts of record |
 | Company investor-relations pages | Annual reports, earnings decks, press releases (PDF/HTML) | Multimodal text + tables + charts; company news |
 | State Street SPDR fund pages | Fact sheets, prospectuses, annual reports (PDF) | Fund-level documents for the 11 ETFs |
-| [Stooq](https://stooq.com) / [Stockanalysis.com](https://stockanalysis.com) | Price and fundamentals CSVs | Structured figures to cross-check filings and charts; one year of daily prices for 1-week, 1-month and 3-month trends |
+| [Tiingo](https://www.tiingo.com) (primary) / [Twelve Data](https://twelvedata.com) (fallback) | Daily prices through their APIs, one free key each | Structured figures to cross-check filings and charts; one year of daily prices for 1-week, 1-month and 3-month trends |
 | [TipRanks](https://www.tipranks.com) (subscriber; optional) | Analysts' rating actions, its own consensus, the six model ratings of its AI stock analysis, bull and bear points and a catalyst summary, via its MCP server | Enriches the market brief: analyst consensus computed in code, the rest reported apart. Fetched on demand, metered, and cached under its terms of use |
 | Third-party analyst report PDFs, supplied by hand | Two-column cards, borderless tables, vector charts | A demanding layout for Docling; third-party figures are weighed below filings |
 | [Exa](https://exa.ai) search API | Agentic web search: third-party news articles and public pages | Secondary coverage per ticker, ingested into the corpus |
@@ -141,7 +141,7 @@ flowchart TB
     MS["models service on the laptop GPU<br/>Docling /parse · LightOnOCR /ocr<br/>Qwen3-VL-Reranker /rerank · sentiment /sentiment"]
     OR["OpenRouter<br/>chat, vision, embeddings, judge"]
     TM["TipRanks MCP server (optional)<br/>analyst views, on demand"]
-    WEB["Exa search · SEC · IR pages · SPDR · Stooq"]
+    WEB["Exa search · SEC · IR pages · SPDR · Tiingo · Twelve Data"]
     RQ[("Redis job queue")]
     LF["Langfuse Cloud<br/>masked traces and scores"]
 
@@ -174,13 +174,13 @@ Only step ① is agent-driven: in Phase 5 the Data Aggregator decides which sour
 flowchart TB
     subgraph ACQ["① Acquire: the only agent-driven step"]
         direction TB
-        A["Sources<br/>filings, IR decks, fund docs, news pages,<br/>price/fundamentals CSV, TipRanks MCP"]
+        A["Sources<br/>filings, IR decks, fund docs, news pages,<br/>price APIs, TipRanks MCP"]
         B1["download / web search + public scrape /<br/>MCP / supplied file"]
         A --> B1
     end
 
     B1 --> KIND{"Document or<br/>structured data?"}
-    KIND -->|"CSV, MCP JSON, XBRL JSON"| VAL["Validate with Pydantic<br/>resolve ticker, normalize units"]
+    KIND -->|"price API JSON, MCP JSON, XBRL JSON"| VAL["Validate with Pydantic<br/>resolve ticker, normalize units"]
 
     subgraph PARSE["② Parse with Docling"]
         direction TB
@@ -218,7 +218,7 @@ flowchart TB
     subgraph VER["④ Verify by agreement"]
         direction TB
         VT["Table: Docling cells vs XBRL facts,<br/>then VLM read of the crop,<br/>matched by row label"]
-        VC["Chart series vs financial_facts / CSV<br/>when a matching series exists"]
+        VC["Chart series vs financial_facts<br/>when a matching series exists"]
     end
 
     TBL --> VT
@@ -245,7 +245,7 @@ flowchart TB
 
 - **Typed elements, not a text dump.** Docling returns each element with its page and bounding box, and tables and charts are cropped before a vision model reads them. Scanned pages, measured by how little text layer they have, go to LightOnOCR; that is a measurement, not a model decision.
 - **Each element gets the representation it needs.** Text is chunked under its heading path. Tables become Markdown, and their cells become typed records. Logos and icons are dropped by Docling's own classifier; a vision model then classifies each remaining picture: data-critical charts become a JSON series, trend charts a search caption with no numbers, and other pictures are kept only if they have a caption.
-- **A number read from a chart is an estimate.** It is labelled as one and never stored as a financial fact. It becomes quotable only when a matching series exists in the filings data or a CSV, and the answer then cites that record. Text the publisher printed in the chart, such as a legend value, is kept as text and stays quotable.
+- **A number read from a chart is an estimate.** It is labelled as one and never stored as a financial fact. It becomes quotable only when a matching series exists in the filings data, and the answer then cites that record. Text the publisher printed in the chart, such as a legend value, is kept as text and stays quotable.
 - **Tables are verified by agreement.** Filing tables are checked against SEC's structured XBRL data first, which needs no model. Tables that still need a second reading are compared row by row with the vision model's reading of the same crop, up to a cap per document.
 - **Images are files, not payloads.** Every crop is stored once, named by its hash, and everything downstream carries a reference to it.
 
@@ -380,7 +380,7 @@ Each phase ships a demo notebook backed by tested engine code, so the project st
 
 - **Phase 0. Environment.** The WSL2 and Docker environment, the four services, the engine's empty shell, durable runs and the assumption checks. No notebook. Rules: [DESIGN §9](docs/DESIGN.md#9-runtime-and-infrastructure). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-0-environment).
 - **Phase 1. Multimodal RAG.** Ingestion of real documents, filtered and reranked retrieval, a first cited answer, the run record and a behaviour baseline. Notebooks `01_ingestion` and `02_retrieval`. Rules: [DESIGN §3](docs/DESIGN.md#3-ingestion-rules) and [§4](docs/DESIGN.md#4-retrieval-and-verification-rules). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-1-multimodal-rag).
-- **Phase 2. Structured extraction.** Typed records from filings data, tables and CSVs, table verification, prices and trends, news, and analyst views from an optional provider. Notebook `03_structured_extraction`. Rules: [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow) and [§7](docs/DESIGN.md#7-data-model). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-2-structured-extraction).
+- **Phase 2. Structured extraction.** Typed records from filings data and tables, table verification, prices and trends, news, and analyst views from an optional provider. Notebook `03_structured_extraction`. Rules: [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow) and [§7](docs/DESIGN.md#7-data-model). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-2-structured-extraction).
 - **Phase 3. Charts and provenance.** Chart reading as estimates, and the provenance gate that blocks a forged chart number. Notebook `04_charts_provenance`. Rules: [DESIGN §4](docs/DESIGN.md#4-retrieval-and-verification-rules). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-3-charts-and-provenance).
 - **Phase 4. Evaluation.** A wider question set, scores compared with stored baselines, and trajectory ranking. Notebook `05_evaluation`. Rules: [DESIGN §11](docs/DESIGN.md#11-evaluation-checks-in-detail). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-4-evaluation).
 - **Phase 5. Multi-agent and hardening.** The supervisor, sub-agents, skills, memory and safety gates around the Phase 1–4 pipelines. Notebook `06_multi_agent`, the capstone demo. Rules: [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills) and [§13](docs/DESIGN.md#13-memory-and-durable-runs). Slices: [DESIGN §9.3](docs/DESIGN.md#phase-5-multi-agent-and-hardening).
