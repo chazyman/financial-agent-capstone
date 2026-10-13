@@ -90,7 +90,7 @@ ETFs are single instruments: their holdings are never fetched. Equities get SEC 
 | Company investor-relations pages | Annual reports, earnings decks, press releases (PDF/HTML) | Multimodal text + tables + charts; company news |
 | State Street SPDR fund pages | Fact sheets, prospectuses, annual reports (PDF) | Fund-level documents for the 11 ETFs |
 | [Twelve Data](https://twelvedata.com) (primary) / [Tiingo](https://www.tiingo.com) (fallback) | Daily prices through their APIs, one free key each | Structured figures to cross-check filings and charts; one year of daily prices for 1-week, 1-month and 3-month trends |
-| [TipRanks](https://www.tipranks.com) (subscriber; optional) | Analysts' rating actions, its own consensus, the six model ratings of its AI stock analysis, bull and bear points and a catalyst summary, via its MCP server | Enriches the market brief: analyst consensus computed in code, the rest reported apart. Fetched on demand, metered, and kept in the local database under its terms of use |
+| [TipRanks](https://www.tipranks.com) (subscriber) | Analysts' rating actions, its own consensus, the six model ratings of its AI stock analysis, bull and bear points, a catalyst summary, and the earnings estimates and company KPIs that SEC filings lack, via its MCP server | Enriches the market brief: analyst consensus computed in code, the rest reported apart. Fetched on demand, metered, and kept in the local database under its terms of use |
 | Third-party analyst report PDFs, supplied by hand | Two-column cards, borderless tables, vector charts | A demanding layout for Docling; third-party figures are weighed below filings |
 | [Exa](https://exa.ai) search API | Agentic web search: third-party news articles and public pages | Secondary coverage per ticker, ingested into the corpus |
 | Earnings-call transcripts (e.g. Motley Fool) | Text | Management commentary and guidance |
@@ -103,7 +103,7 @@ Data is acquired four ways:
 - the TipRanks MCP server;
 - a file supplied by hand, for a document with no permitted automated path, such as an analyst report PDF.
 
-**Web search is acquisition only.** Search results are ingested into the corpus before anything can cite them; no answer quotes a live web result. Credentials stay in `.env` and never reach an LLM prompt. TipRanks is an optional provider of analyst data: switched off, the engine runs without it and an answer says analyst data is unavailable. Its data is metered and private: it is fetched only when a question needs it, it is kept in the local database and never in the repository, and it never enters the evaluation set ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)).
+**Web search is acquisition only.** Search results are ingested into the corpus before anything can cite them; no answer quotes a live web result. Credentials stay in `.env` and never reach an LLM prompt. TipRanks supplies analyst data and the fundamentals that SEC filings lack (earnings estimates, company KPIs): switched off, the engine runs without it and an answer says those figures are unavailable. Its data is metered and private: it is fetched only when a question needs it, it is kept in the local database and never in the repository, and it never enters the evaluation set ([DESIGN §2](docs/DESIGN.md#2-data-acquisition)).
 
 ## 4. Architecture
 
@@ -350,7 +350,7 @@ Sub-agents don't share a conversation. Each receives a typed brief and returns a
 
 **Memory is in PostgreSQL, and is never a source.** Every graph is checkpointed, so an interrupted run resumes. A session keeps its earlier turns, so a follow-up question can refer to them. A long-term store keeps the user's preferences and a record of past runs. Fixed nodes read and write all of it, no agent does, and a remembered figure can't support a claim: it must be retrieved again ([DESIGN §13](docs/DESIGN.md#13-memory-and-durable-runs)).
 
-The 43 tools, the 6 skills and their scripts, the plan and the handoffs are in [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills). The market intelligence workflow is in [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow).
+The 45 tools, the 6 skills and their scripts, the plan and the handoffs are in [DESIGN §5](docs/DESIGN.md#5-agents-tools-and-skills). The market intelligence workflow is in [DESIGN §6](docs/DESIGN.md#6-market-intelligence-workflow).
 
 ### 4.4 Runtime
 

@@ -27,6 +27,7 @@ Companion to [PROPOSAL.md](../PROPOSAL.md). The proposal covers what the capston
 | Analyst ratings and consensus, from an optional provider: TipRanks, through its MCP server (§2) | Rating actions and consensus | Consensus and price target only, as TipRanks computes them for the fund |
 | AI model ratings, from the same provider: the six of TipRanks' AI stock analysis (§6) | Yes | No (the tool covers stocks) |
 | Bull and bear points and a catalyst summary, from the same provider (§6) | Yes | No (both tools are described for stocks, and neither has been called yet) |
+| Earnings estimates, surprises and company KPIs, from the same provider: what SEC filings lack (§2) → `financial_facts` | Yes | No (the tools cover stocks) |
 | Third-party analyst report PDFs, supplied by hand (§2) | Yes | No |
 | News (press releases + Exa) | Yes | Yes (fund- and sector-level news) |
 | `verify_claim` against filings | Yes | No; claims about an ETF are marked unverifiable against filings |
@@ -60,6 +61,7 @@ Four acquisition paths:
 Analyst data comes from optional providers. A provider is switched on in the settings (`providers.<name>.enabled`, §10), supplies some kinds of analyst view, and enriches what Market Intelligence can report (§6). With no provider enabled the engine still runs: every analyst view is marked unavailable, and an answer says so. TipRanks is the one provider the capstone builds. It needs a paid subscription, so it is off in the committed settings.
 
 - **The seam is the kind of data, not the client.** There are five kinds: analysts' rating actions, the provider's own consensus, AI model ratings, bull and bear points, and a catalyst summary. Each is a typed row that names its provider (§7). A second provider keeps its own client and mappers and writes rows of the same kinds, so nothing downstream names a provider. A new kind of data is a larger change: it needs a schema, a slot in the digest (§6) and a line in the skill.
+- **Fundamentals fill what filings lack, and are part of the engine.** TipRanks also supplies two kinds of fundamentals: the quarterly earnings record with analysts' estimates (actual and estimated EPS and revenue, their range, the surprise, the report date) and the company's operational KPIs. SEC XBRL carries neither forward estimates nor KPIs such as active users. They are stored as `financial_facts` rows (§7), never in place of an XBRL fact: where both give the same metric, period, basis and scope, the XBRL fact is the record and the provider's value is attached to it as corroborating or disagreeing (§4). The group has its own switch, `providers.tipranks.fundamentals`, beside `analyst_views` for the five analyst-view kinds: with the provider enabled, either group can be on or off alone (§10). Whether a provider row may make a chart or a table `agreed` is a setting, `verification.reference_sources`, which by default lists only XBRL and filing rows (§4, §10). With the provider switched off, these figures are marked unavailable with their reason, as the analyst views are.
 - **Each provider carries its own rules,** as settings: its quota and reserve, a staleness threshold per kind, whether its content is masked in traces, whether it may enter an evaluation run, and the credit an answer must show.
 - **The same kind from two providers.** A rating action that both report is counted once (§6). Each provider's own consensus stays its own block.
 
@@ -67,7 +69,7 @@ Analyst data comes from optional providers. A provider is switched on in the set
 
 The TipRanks MCP server was checked in October 2026 by reading its catalogue of 71 tools and making six calls. The catalogue and a map of what every tool does are kept locally in `Resources/` (`tipranks_catalogue.json`, `tipranks_capabilities.md`), a folder git ignores, so the server need not be evaluated again. What was found shapes the design.
 
-- **One client, one mapper per tool.** `backends/tipranks.py` is the only code that talks to the server: it sends the key, counts calls and parses the answer. It is the engine's own class, built on the official MCP Python SDK and not on an adapter that binds a server's tools to a model (`spikes/phase0`, check 14). Each server tool the engine uses has its own typed tool that maps the answer to a schema (§5). The capstone has five, one per kind: `tipranks_ratings`, `tipranks_snapshot`, `tipranks_ai_analysis`, `tipranks_bulls_bears` and `tipranks_catalyst`. Adding a sixth changes nothing that exists. None of them, and none of the server's own tools, is ever offered to a model.
+- **One client, one mapper per tool.** `backends/tipranks.py` is the only code that talks to the server: it sends the key, counts calls and parses the answer. It is the engine's own class, built on the official MCP Python SDK and not on an adapter that binds a server's tools to a model (`spikes/phase0`, check 14). Each server tool the engine uses has its own typed tool that maps the answer to a schema (§5). The capstone has seven, one per kind: `tipranks_ratings`, `tipranks_snapshot`, `tipranks_ai_analysis`, `tipranks_bulls_bears`, `tipranks_catalyst`, `tipranks_earnings` and `tipranks_kpis`. Adding an eighth changes nothing that exists. None of them, and none of the server's own tools, is ever offered to a model.
 - **Fetched on demand, as one step.** Nothing is fetched on a schedule. A kind is fetched the first time a question needs it and kept until it goes stale (below). The fetch (`pipelines/provider_fetch.py`) is a pipeline run as a whole, reached through one tool, `tipranks_fetch`. For each kind it is asked for, it skips what is fresh, checks the quota, calls that kind's mapper once, hands the validated rows straight to the ingestion sub-graph and returns a `FetchReceipt`: per kind, whether it was fetched, served from the stored rows or skipped, the dates covered, the calls used and the calls left. No payload enters a model's context, and no raw copy is written to disk.
 - **One agent triggers it.** In Phase 5 the freshness step puts the TipRanks agent ahead of the plan when a view the plan needs is stale or missing (§5). The agent's one action is `tipranks_fetch`, and what it reads back is the receipt. The plan has already named the views, so the agent has little to judge today; it is where further capabilities of the server would be added. Before Phase 5 the same fetch is called by `engine.refresh()`, for the tickers and kinds a notebook names.
 - **The engine validates every answer.** The server declares no output schema: an answer is JSON inside a text block, described only in the tool's description. Each mapper validates it with its own Pydantic model, normalises the three date formats the server uses and accepts a missing price target. An answer that doesn't validate raises a `ToolError` and never becomes a row.
@@ -92,6 +94,8 @@ The TipRanks MCP server was checked in October 2026 by reading its catalogue of 
 | Rating actions | A new analyst action, clustered after earnings | 7 days, and 1 day in the week after an earnings date |
 | Bull and bear points | Earnings and major news | 7 days, and 1 day in the week after an earnings date |
 | AI model ratings | The earnings cycle: each analysis names the report it reflects | 14 days |
+| Earnings record and estimates | Each report; estimates move before it | 7 days, and 1 day in the week after an earnings date |
+| Company KPIs | The quarterly report | 30 days |
 
 The earnings date comes from the snapshot, which reports the next one. A date that has passed within `earnings_window_days` puts the shorter threshold in force; with no earlier snapshot to read it from, the normal one applies. The thresholds are starting values, set by judgement: TipRanks documents no update frequency. Each re-fetch therefore records whether the content changed (§12.2), so a threshold that keeps returning the same content is shown to be too short.
 
@@ -160,7 +164,7 @@ These are the rules behind the retrieval diagram (PROPOSAL §4.2).
 - **The drafter sees the image of a chart.** Text and table hits reach the drafting step as text or Markdown. A hit whose kind is listed in `drafting.include_crops` (charts and pictures) also sends its crop, downscaled to `drafting.crop_max_side`, so a claim about shape is made from the image and not only from a caption written before the question was known. The provenance rule below is unchanged: a number read off that crop is a magnitude claim citing an un-checkable source, and is blocked. The primary and fallback models must therefore accept images.
 - **The provenance rule.** A claim that states a number must cite a checkable source: a chunk with a second possible source (`docling_text`, `docling_table` or `lighton_ocr`) or a typed record (`record_ref`, §7). A chart may support a claim about **shape**, never about **magnitude**. Text printed in a chart is a separate text chunk and follows the text rule (§3). The model's own `magnitude` / `shape` label is cross-checked by scanning the claim text for numbers.
 - **The number itself is checked.** Citing a checkable source is not enough: every figure in a magnitude claim must be found in the source it cites. For a chunk, the figure must appear in the chunk's representation. For a typed record, it must equal the record's value, or appear in its text when the record is an analyst note (§6). For a figure the engine computed, the claim cites the calculation (§5, §7) and must equal its result. Both sides are normalised in code before they are compared (thousands separators, parentheses, percent signs, scale words), and compared to the precision the claim states. Period labels and dates are not figures. A claim whose number is not in its source is blocked like any other provenance failure.
-- **Two policy levels, named in every answer.** `policy.enforce_provenance` requires that a second source *exists*; `policy.require_agreement` is the strict level: a magnitude claim must cite a table chunk whose check *ran and agreed*, or a typed record. A `financial_facts` row read from a table must itself be `agreed`; XBRL facts, `prices` and `analyst_ratings` are the record. A figure found only in prose or OCR text must be redrafted to cite its record, or it is blocked. The answer footer names the level used, because "verified" means whatever the policy made it mean.
+- **Two policy levels, named in every answer.** `policy.enforce_provenance` requires that a second source *exists*; `policy.require_agreement` is the strict level: a magnitude claim must cite a table chunk whose check *ran and agreed*, or a typed record. A `financial_facts` row read from a table must itself be `agreed`; The sources listed in `policy.record_sources` are the record: by default XBRL facts, `prices`, `analyst_ratings` and a provider's `financial_facts` rows (§2), each shown with its coefficient. `verify_chart` and `verify_table` compare a figure only against the sources listed in `verification.reference_sources`, by default XBRL and filing rows, so a provider's row does not make a chart or a table `agreed` unless that setting says so. Both are settings, not branches in code; a source name that is not in `source_truth` fails at startup. A figure found only in prose or OCR text must be redrafted to cite its record, or it is blocked. The answer footer names the level used, because "verified" means whatever the policy made it mean.
 - **Source truth can be a floor.** `policy.min_source_truth` is 0 by default: every source is admissible and the coefficient only weighs the order. Set higher, it becomes a hard rule when a figure is needed: sources below it are excluded by a predicate, like `require_checkable`, and `verify_claims` blocks a magnitude claim that cites one.
 - **Every citation shows its source truth.** Each cited source is shown with its coefficient, e.g. "TipRanks AI analyst report, 6/10", and the answer footer names the floor in force beside the policy level.
 - **One redraft, then stop.** When `verify_claims` fails, the draft goes back to the drafting step (the Financial Analyst in Phase 5) with the failure reason, up to `policy.max_draft_retries` times. The redraft passes through the same check, and a further failure stops the run with the reason. A `check_safety` failure stops at once and is never redrafted. The retry appears in the Langfuse trace and in the answer's policy footer, so it is a visible retry, not a silent repair.
@@ -175,7 +179,7 @@ These are the rules behind the retrieval diagram (PROPOSAL §4.2).
 - **Known by then, or not admissible.** A source is admissible only if it was known on the as-of date. This is a predicate in the same SQL query as the others: `published_at` for chunks, documents and news items, `known_at` for financial facts, the date itself for prices and `rating_date` for ratings (§7). A version of a document that was replaced before the as-of date is excluded the same way.
 - **"Latest" means latest at the as-of date.** The last close, the trailing twelve months, the ratings in force, the record that wins a tie and every trend window end at the as-of date. News recency decays from it, not from today.
 - **A period is not an as-of date.** "Apple's FY2024 revenue" names a period and is answered as of today, with any restatement since. "What did analysts expect in March?" moves the as-of date.
-- **A snapshot is only valid from its day on.** A provider's own consensus, its AI analysis, its bull and bear points and its catalyst summary are the values of the day they were fetched. Each fetch adds a row with its own `fetched_at`, and the earlier rows stay (§7). A row is admissible for an as-of date on or after the day of its `fetched_at`, and is shown with that date. The latest admissible row is used: for an earlier as-of date, the latest row fetched on or before it. When there is none, the view is left out and the answer says so. They are fetched on demand, so a row exists only for the days a question asked for it.
+- **A snapshot is only valid from its day on.** A provider's own consensus, its AI analysis, its bull and bear points and its catalyst summary are the values of the day they were fetched. Each fetch adds a row with its own `fetched_at`, and the earlier rows stay (§7). A row is admissible for an as-of date on or after the day of its `fetched_at`, and is shown with that date. The latest admissible row is used: for an earlier as-of date, the latest row fetched on or before it. When there is none, the view is left out and the answer says so. A provider's fundamentals rows carry their own period, and their `known_at` is the day of `fetched_at`. They are fetched on demand, so a row exists only for the days a question asked for it.
 - **Freshness belongs to today.** `check_freshness` triggers a refresh only when the as-of date is today. For an earlier date, fetching today's data can't help, so it reports whether the corpus reaches the as-of date and what is missing, and no provider is called.
 - **Every citation carries its dates.** A hit keeps its `data_as_of` or period and its `published_at` (§5), and the citation shows them beside the source, so a reader sees how old a figure is.
 
@@ -187,7 +191,7 @@ The course's harness separates **state / skills / tools / policy** (Day 1, reinf
 - **Scripts** are typed functions in a skill's `scripts/` folder. A script is one procedure: a fixed chain of tool calls whose intermediate results the model has no need to read. It has its own arguments model and result model (`build_digest` → `BuildDigestArgs`), registered as a `ScriptSpec`, so a model calls it with a strict schema, as it would a tool. The tools behind a script never appear in a prompt.
 - **Skills** are folders in `skills/`, in the Agent Skills format: a `SKILL.md`, optional `scripts/` and optional `references/`. The `SKILL.md` follows the course's Day 1 format: YAML frontmatter (`name`, `description`, `version`, `owner`) and six required sections (assumptions, constraints, tools, procedure, verification, failure modes). A skill owns its tools. Each is either called by one of the skill's scripts or, where a step is a single call whose result the model must judge, offered to the model directly. An agent starts with the name and description of each skill it holds, and loads the full `SKILL.md` when a task needs it.
 
-**What a model can call is an action:** a script, or a direct tool. Apart from the two skill-loader tools (below), there are six, against the 43 tools behind them: three scripts (`acquire`, `build_digest`, `compare`) and three direct tools (`search_web`, `retrieve`, `tipranks_fetch`). A script exists only for a chain. `retrieve` and `tipranks_fetch` are already chains written as code, each a pipeline run as a whole, and `search_web` is one call, so a script around any of them would add a layer and save nothing.
+**What a model can call is an action:** a script, or a direct tool. Apart from the two skill-loader tools (below), there are six, against the 45 tools behind them: three scripts (`acquire`, `build_digest`, `compare`) and three direct tools (`search_web`, `retrieve`, `tipranks_fetch`). A script exists only for a chain. `retrieve` and `tipranks_fetch` are already chains written as code, each a pipeline run as a whole, and `search_web` is one call, so a script around any of them would add a layer and save nothing.
 
 Every sub-agent is an LLM loop plus the skills it holds. It is declared as a frozen `AgentSpec` in `agents/registry.py` (name, prompt, skills, model, step limit, brief and artifact types, and the setting that enables it, if any) and built by one factory, `make_agent_node` in `agents/factory.py`. Adding a sub-agent means adding a spec, not writing a graph. The Supervisor is not a loop (see "The Supervisor plans" below). The agents' purposes are in PROPOSAL §4.3. Phase 5 wraps the Phase 1–4 pipelines rather than replacing them: the Data Aggregator's `acquire` script hands acquired files to the ingestion sub-graph, the Researcher runs the retrieval sub-graph with `retrieve`, and the TipRanks agent runs the provider fetch with `tipranks_fetch` (§2). Each pipeline runs as a whole; no agent can call its inner steps.
 
@@ -205,7 +209,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | Stage | Owner | Actions a model can call | Tools behind them | Skills |
 |---|---|---|---|---|
 | Acquisition (PROPOSAL §4.1 ①) | Data Aggregator | `search_web` (direct), `acquire` (script) | `fetch_document`, `scrape_page`, `fetch_news`, `ingest` | `source-selection` |
-| Analyst views from a provider (§2) | TipRanks agent, when the provider is enabled | `tipranks_fetch` (direct) | The provider fetch as a whole: `tipranks_snapshot`, `tipranks_ratings`, `tipranks_ai_analysis`, `tipranks_bulls_bears`, `tipranks_catalyst`, then ingestion | `tipranks-market-data` |
+| Analyst views from a provider (§2) | TipRanks agent, when the provider is enabled | `tipranks_fetch` (direct) | The provider fetch as a whole: `tipranks_snapshot`, `tipranks_ratings`, `tipranks_ai_analysis`, `tipranks_bulls_bears`, `tipranks_catalyst`, `tipranks_earnings`, `tipranks_kpis`, then ingestion | `tipranks-market-data` |
 | Ingestion (PROPOSAL §4.1 ②–⑥) | No agent: deterministic sub-graph | none | `parse_document`, `route_ocr`, `build_chunks`, `classify_chart`, `extract_chart_series`, `caption_chart`, `verify_table`, `verify_chart`, `resolve_entity`, `dedupe`, `classify_news`, `extract_records`, `check_safety`, `embed` | none |
 | Retrieval planning: filings and fundamentals | Researcher | `retrieve` (direct) | The retrieval sub-graph as a whole | `retrieval-planning` |
 | Retrieval (PROPOSAL §4.2 ①–⑤) | No agent: deterministic sub-graph, run by `retrieve` | none | `search`, `record_lookup`, `rerank`, `check_sufficiency` | none |
@@ -218,7 +222,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 </details>
 
 <details>
-<summary><b>Tools table</b> (43 tools)</summary>
+<summary><b>Tools table</b> (45 tools)</summary>
 
 | Tool | What it does | Returns | Backing module | Used by |
 |---|---|---|---|---|
@@ -230,7 +234,9 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | `tipranks_ai_analysis(ticker)` | The server's `get_ai_stock_analysis` in full detail, one call per equity: the six model ratings, each with its score, rating, price target and date | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_bulls_bears(tickers)` | The server's `get_bulls_bears_summary`, one batched call: the bull and bear points of each stock, each tagged with a topic | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_catalyst(tickers)` | The server's `get_stock_catalyst`, one batched call: TipRanks' summary of why each stock is moving | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
-| `tipranks_fetch(kinds, tickers)` | Run the TipRanks fetch as a whole (§2): for each kind named, skip what is fresh in the stored rows, stop at the quota reserve, call that kind's tool above once, validate the answer and hand the rows to ingestion. Refused for a past as-of date | `FetchReceipt` | acquisition | TipRanks agent, directly; `engine.refresh()` before Phase 5 |
+| `tipranks_earnings(ticker)` | The server's `get_earnings_history`, one call per equity: the last quarters' actual and estimated EPS and revenue with their range, the report date and time, the price reaction, and the next quarter's estimate (§2) | `list[FinancialFact]` | acquisition | TipRanks fetch (§2) |
+| `tipranks_kpis(ticker)` | The server's `get_company_kpis`, one call per equity: the company's operational KPIs, by group, as dated series (§2) | `list[FinancialFact]` | acquisition | TipRanks fetch (§2) |
+| `tipranks_fetch(kinds, tickers)` | Run the TipRanks fetch as a whole (§2): for each kind named, skip what is fresh in the stored rows, stop at the quota reserve, call that kind's tool above once, validate the answer and hand the rows to ingestion. A kind whose group is switched off is not called and is reported "switched off". Refused for a past as-of date | `FetchReceipt` | acquisition | TipRanks agent, directly; `engine.refresh()` before Phase 5 |
 | `fetch_news(ticker, since)` | Collect candidate news articles and press releases for a ticker since a date | `list[AcquiredItem]` | acquisition | `acquire` (Data Aggregator) |
 | `ingest(items)` | Run the ingestion sub-graph on acquired items, named by the ids on their receipts, or on a supplied file (§2): inline for the `staleness.inline` types (the answer waits), queued to the worker for documents | `IngestReport` | acquisition | `acquire` (Data Aggregator) |
 | `parse_document(file)` | Docling conversion (via the `models` service, §9) into typed elements with page, bbox, associated caption and Docling's picture class; returns Markdown, JSON and the crops for the `ArtifactStore` to write (§3) | `ParsedDocument` | parsing | Ingestion sub-graph |
@@ -278,7 +284,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | `news-digest` | Source tiers, date windows, dedupe, consensus, the analyst views a provider adds, checking news numbers against filings; produces a `NewsDigest` | `build_digest`: `news_window`, `analyst_consensus`, `analyst_notes`, `news_trend`, `verify_claim` | none | `source_tiers.md`, `event_types.md` | Market Intelligence |
 | `financial-analysis` | Metric definitions (e.g. FCF margin, max drawdown), period alignment, trend windows, units, comparing equities vs ETFs | `compare`, which takes a list of calculations: `compare_periods`, `compare_companies`, `extract_metric`, `price_trend` | none | `metric_definitions.md` | Financial Analyst |
 | `grounded-answering` | Writing claims that pass verification: one figure per claim, cite a `chunk_id` or `record_ref`, label `magnitude` vs `shape`, never quote a number from an ESTIMATED element | none (enforcement is the output gate's `verify_claims`) | none | `provenance_policy.md` | Financial Analyst |
-| `tipranks-market-data` | The five kinds of analyst view TipRanks supplies, what each costs in metered calls, and how to read a fetch receipt | none | `tipranks_fetch` | `kinds.md` | TipRanks agent; present only when the provider is enabled (§2) |
+| `tipranks-market-data` | The seven kinds of data TipRanks supplies (five analyst views, earnings and KPIs), what each costs in metered calls, and how to read a fetch receipt | none | `tipranks_fetch` | `kinds.md` | TipRanks agent; present only when the provider is enabled (§2) |
 
 </details>
 
@@ -431,7 +437,7 @@ One PostgreSQL database holds everything. Typed records live in relational table
 
 **A refresh adds; it never destroys.** Re-ingesting a document whose content changed stores a new document with its own chunks and records. The earlier version stays and is marked `superseded_at`; retrieval excludes it with a predicate, unless the as-of date (§4) falls before that moment. So an old answer can be replayed against what it read, and the history is there when a later use needs it. There is one exception: a daily price is one fact, so a refresh inserts or updates on (instrument, date). Rows fetched from a provider are not an exception: each fetch adds a row and the earlier ones stay (§2).
 
-**Every row says when it was known.** The as-of rules (§4) need one date per row: `published_at` for documents, chunks and news items; `known_at` for a financial fact, which is the filing date for XBRL facts and filing tables; `date` for a price; `rating_date` for a rating; the day of `fetched_at` for a provider's own consensus or note, where each fetch adds a row and the latest admissible one wins (§4).
+**Every row says when it was known.** The as-of rules (§4) need one date per row: `published_at` for documents, chunks and news items; `known_at` for a financial fact, which is the filing date for XBRL facts and filing tables; `date` for a price; `rating_date` for a rating; the day of `fetched_at` for a provider's own consensus, note or fundamentals row, where each fetch adds a row and the latest admissible one wins (§4).
 
 **An item can concern several instruments.** A document, a chunk and a news item link to zero, one or several instruments, and a typed record stays on one. A fund document shared by several ETFs, or an article that names two companies, is then stored once and found for each. The ticker predicate (§4) reads the link in the same `WHERE` clause, and how the link is stored is settled in slice 1.1. An instrument's `type` is an open set: a type's sources and metrics come from configuration (§2, §10).
 
@@ -442,7 +448,7 @@ One PostgreSQL database holds everything. Typed records live in relational table
 | `chunks` | chunk_id, doc_id, its instruments (zero, one or several; above), the envelope fields below, `embedding vector(1536)`, `search_text tsvector` | Ingestion sub-graph | Researcher, Market Intelligence |
 | `instruments` | `instrument_id` (ticker), name, type (ETF or Equity today; an open set), sector, cik (equities only), aliases, per-site symbols | Ingestion sub-graph, from `ListEquities.csv` | all |
 | `documents` | doc_id, its instruments (zero, one or several), source, url, doc_type, source_tier, published_at, fetched_at, content_hash, superseded_at | Ingestion sub-graph | Researcher, Market Intelligence, Supervisor (freshness) |
-| `financial_facts` | fact_id, instrument_id, doc_id, metric, value, unit, scale as reported, period, fiscal/calendar alignment, basis (reported / adjusted), scope (consolidated / segment / fund), known_at, cell reference, subtotal flag, footnotes, extraction_method (xbrl / docling_table), verification_status. Two facts are the same metric only on the same basis and scope. Equity figures from SEC XBRL data and filing tables; ETF fund fields from fund documents | Ingestion sub-graph | Researcher, Financial Analyst |
+| `financial_facts` | fact_id, instrument_id, doc_id, metric, value, unit, scale as reported, period, fiscal/calendar alignment, basis (reported / adjusted), scope (consolidated / segment / fund), known_at, cell reference, subtotal flag, footnotes, extraction_method (xbrl / docling_table / provider), verification_status; for a provider's rows also source and fetched_at, and `doc_id` is empty. Two facts are the same metric only on the same basis and scope. Equity figures from SEC XBRL data and filing tables; ETF fund fields from fund documents; a provider's earnings estimates and company KPIs (§2) | Ingestion sub-graph | Researcher, Financial Analyst |
 | `prices` | price_id, instrument_id, date (unique with instrument_id), open, high, low, close, volume, source, fetched_at. The first load brings `prices.history_days` of history; each refresh inserts or updates on (instrument_id, date) | Ingestion sub-graph (price APIs) | Financial Analyst (`price_trend`), Market Intelligence (implied upside), Researcher, Supervisor (freshness) |
 | `news_items` | news_id, doc_id, item index (unique with doc_id: one document can hold several dated items), its instruments (zero, one or several), headline, event_type, sentiment, source_sentiment (the publisher's own tag, when it has one), published_at, corroborating_sources | Ingestion sub-graph | Market Intelligence |
 | `analyst_ratings` | rating_id, instrument_id, rater_kind (analyst / ai_model / source_consensus), firm, analyst, action, rating, score (AI ratings only, 0 to 100), price_target, rating_date, source, fetched_at. Three kinds of row: an analyst's rating action; one of the six model ratings of TipRanks' AI stock analysis, with the model as the analyst; and a provider's own consensus, which also carries the next earnings date the provider reports (§2). Only the first kind enters `analyst_consensus` (§6) | Ingestion sub-graph | Market Intelligence |
@@ -594,7 +600,7 @@ src/finrag_engine/
 │   │                      # and ScriptSpec per script (its skill, arguments model, result model)
 │   ├── gateway.py         # call_tool: the only path from a model to an action and from a script to a tool
 │   ├── acquisition.py     # search_web, fetch_document, scrape_page, fetch_news, ingest, tipranks_fetch and the
-│   │                      # five TipRanks mappers: snapshot, ratings, ai_analysis, bulls_bears, catalyst
+│   │                      # seven TipRanks mappers: snapshot, ratings, ai_analysis, bulls_bears, catalyst, earnings, kpis
 │   ├── parsing.py         # parse_document (Docling), route_ocr, build_chunks
 │   ├── multimodal.py      # classify_chart, extract_chart_series, caption_chart
 │   ├── verification.py    # verify_table, verify_chart
@@ -695,7 +701,7 @@ One limit is not a matter of code. TipRanks rows are kept with their `fetched_at
 **Known limits**, accepted for the capstone:
 - **One GPU.** The reranker scores one candidate at a time, so the time to rerank grows with `retrieval.candidates_k`.
 - **A sequential plan.** The plan walker runs the steps one after another, and an inline refresh holds the answer.
-- **The TipRanks quota bounds the questions, not the universe.** Nothing is fetched until a question needs it. A first question on one equity with nothing stored costs up to five metered calls, and a comparison of four equities up to eleven; a kind that is stored and fresh costs none until it goes stale.
+- **The TipRanks quota bounds the questions, not the universe.** Nothing is fetched until a question needs it. A first question on one equity with nothing stored costs up to seven metered calls (five when it needs no earnings or KPI figures), and a comparison of four equities up to 19 (eleven without them); a kind that is stored and fresh costs none until it goes stale.
 - **One user.** No tenancy and no sign-in. Memory is namespaced by a user id so that this can change (§13).
 
 ### 9.1 Services
@@ -911,9 +917,11 @@ staleness:                   # past these ages, check_freshness triggers a refre
   inline: [prices, news]            # refreshed before answering; documents are queued to the worker.
                                     # A provider's analyst views have their own thresholds, below
 
-providers:                   # §2; optional sources of analyst views, fetched on demand and never on a schedule
+providers:                   # §2; sources of analyst views and of the fundamentals filings lack, fetched on demand and never on a schedule
   tipranks:
-    enabled: false                  # needs a TipRanks subscription and TIPRANKS_MCP_TOKEN; off, every analyst view is unavailable
+    enabled: false                  # needs a TipRanks subscription and TIPRANKS_MCP_TOKEN; off, every analyst view and every figure that filings lack is unavailable
+    analyst_views: true             # the five analyst-view kinds; with the provider enabled, off marks them unavailable and spends no call on them
+    fundamentals: true              # earnings and kpis, the figures SEC filings lack; with the provider enabled, off marks them unavailable and spends no call on them
     monthly_quota: 200              # the plan's cap; the server's usage counter is authoritative
     reserve_calls: 50               # a fetch stops when fewer remain, keeping these for development and checks
     max_attempts: 1                 # a call is never repeated automatically: a failed call is counted too (§2)
@@ -927,6 +935,8 @@ providers:                   # §2; optional sources of analyst views, fetched o
       rating_actions: {stale_after: 7d, after_earnings: 1d}    # one call per equity
       bull_bear:      {stale_after: 7d, after_earnings: 1d}    # one batched call
       ai_ratings:     {stale_after: 14d}                       # one call per equity
+      earnings:       {stale_after: 7d, after_earnings: 1d}    # one call per equity
+      kpis:           {stale_after: 30d}                       # one call per equity
 
 news:
   default_window_days: 30
@@ -989,6 +999,7 @@ models_service:
 policy:
   enforce_provenance: true          # magnitude claims must cite a chunk with a second source
   require_agreement: false          # strict level: only agreed tables or typed records (§4)
+  record_sources: [sec_xbrl, prices, analyst_ratings, provider_fundamentals]  # sources whose typed records count as the record at the strict level (§4)
   min_source_truth: 0               # 0 = every source admissible; e.g. 8 excludes analyst reports and news when a figure is needed (§4)
   max_draft_retries: 1              # redrafts after a failed provenance check before the run stops (§4)
   max_supervisor_steps: 25          # LangGraph recursion limit for the supervisor graph (§4)
@@ -999,6 +1010,9 @@ policy:
   max_validation_retries: 2         # re-asks after a model output fails its schema, per model (§5)
   max_result_chars: 4000            # the view of an action's result that a model sees; the full result goes to state (§5)
   max_context_tokens: {}            # per agent; empty until that agent's first baseline is measured, then its peak plus a margin (§5)
+
+verification:
+  reference_sources: [sec_xbrl, sec_filing]   # the only sources verify_table and verify_chart compare a figure against (§4); add a provider's source to let it verify
 
 scraping:
   requests_per_minute: 20
@@ -1100,6 +1114,7 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   analyst_report: 6          # third-party, AI-written reports such as TipRanks' AI analyst report
   ai_analysis: 6             # the six model ratings of TipRanks' AI stock analysis
   analyst_notes: 6           # a provider's own summaries: bull and bear points, catalyst
+  provider_fundamentals: 7   # a provider's earnings estimates and company KPIs (TipRanks)
   news: 5                    # third-party articles and web pages
 ```
 
@@ -1144,7 +1159,9 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   - Window correctness: no item outside the requested date range.
   - `analyst_consensus` equals hand-computed results on synthetic rating rows, and adding AI model rows never changes it.
   - A TipRanks answer that doesn't validate and a quota refusal each raise a `ToolError`; a re-fetch adds a row and keeps the earlier one.
-  - A free check, marked `network`, confirms the five server tools the mappers rely on are still in the server's catalogue.
+  - A free check, marked `network`, confirms the seven server tools the mappers rely on are still in the server's catalogue.
+  - With `providers.tipranks.fundamentals: false` no call is made for `earnings` or `kpis`, the receipt says "switched off", and the analyst views are unaffected; with `analyst_views: false` the reverse.
+  - A provider's earnings or KPI row for a metric, period, basis and scope that XBRL also holds is attached to the XBRL fact, which stays the record; with the default settings it never makes a chart or a table `agreed`; with `verification.reference_sources` widened it does.
 - **Providers (Phase 2+)**, the rules of §2 and §6, on the fake client:
   - With no provider enabled, every analyst view in the digest is marked unavailable and the answer says so.
   - A kind that is fresh costs no call, and a stale one costs one. At the quota reserve the stored copy is used and the footer gives its date. A past as-of date triggers no fetch.
