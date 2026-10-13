@@ -60,7 +60,7 @@ Four acquisition paths:
 Analyst data comes from optional providers. A provider is switched on in the settings (`providers.<name>.enabled`, §10), supplies some kinds of analyst view, and enriches what Market Intelligence can report (§6). With no provider enabled the engine still runs: every analyst view is marked unavailable, and an answer says so. TipRanks is the one provider the capstone builds. It needs a paid subscription, so it is off in the committed settings.
 
 - **The seam is the kind of data, not the client.** There are five kinds: analysts' rating actions, the provider's own consensus, AI model ratings, bull and bear points, and a catalyst summary. Each is a typed row that names its provider (§7). A second provider keeps its own client and mappers and writes rows of the same kinds, so nothing downstream names a provider. A new kind of data is a larger change: it needs a schema, a slot in the digest (§6) and a line in the skill.
-- **Each provider carries its own rules,** as settings: its quota and reserve, how long its rows may be kept, a staleness threshold per kind, whether its content is masked in traces, whether it may enter an evaluation run, and the credit an answer must show.
+- **Each provider carries its own rules,** as settings: its quota and reserve, a staleness threshold per kind, whether its content is masked in traces, whether it may enter an evaluation run, and the credit an answer must show.
 - **The same kind from two providers.** A rating action that both report is counted once (§6). Each provider's own consensus stays its own block.
 
 ### TipRanks: the first provider
@@ -68,19 +68,19 @@ Analyst data comes from optional providers. A provider is switched on in the set
 The TipRanks MCP server was checked in October 2026 by reading its catalogue of 71 tools and making six calls. The catalogue and a map of what every tool does are kept locally in `Resources/` (`tipranks_catalogue.json`, `tipranks_capabilities.md`), a folder git ignores, so the server need not be evaluated again. What was found shapes the design.
 
 - **One client, one mapper per tool.** `backends/tipranks.py` is the only code that talks to the server: it sends the key, counts calls and parses the answer. It is the engine's own class, built on the official MCP Python SDK and not on an adapter that binds a server's tools to a model (`spikes/phase0`, check 14). Each server tool the engine uses has its own typed tool that maps the answer to a schema (§5). The capstone has five, one per kind: `tipranks_ratings`, `tipranks_snapshot`, `tipranks_ai_analysis`, `tipranks_bulls_bears` and `tipranks_catalyst`. Adding a sixth changes nothing that exists. None of them, and none of the server's own tools, is ever offered to a model.
-- **Fetched on demand, as one step.** Nothing is fetched on a schedule. A kind is fetched the first time a question needs it and kept until it goes stale (below). The fetch (`pipelines/provider_fetch.py`) is a pipeline run as a whole, reached through one tool, `tipranks_fetch`. For each kind it is asked for, it skips what is fresh, checks the quota, calls that kind's mapper once, hands the validated rows straight to the ingestion sub-graph and returns a `FetchReceipt`: per kind, whether it was fetched, served from the cache or skipped, the dates covered, the calls used and the calls left. No payload enters a model's context, and no raw copy is written to disk.
+- **Fetched on demand, as one step.** Nothing is fetched on a schedule. A kind is fetched the first time a question needs it and kept until it goes stale (below). The fetch (`pipelines/provider_fetch.py`) is a pipeline run as a whole, reached through one tool, `tipranks_fetch`. For each kind it is asked for, it skips what is fresh, checks the quota, calls that kind's mapper once, hands the validated rows straight to the ingestion sub-graph and returns a `FetchReceipt`: per kind, whether it was fetched, served from the stored rows or skipped, the dates covered, the calls used and the calls left. No payload enters a model's context, and no raw copy is written to disk.
 - **One agent triggers it.** In Phase 5 the freshness step puts the TipRanks agent ahead of the plan when a view the plan needs is stale or missing (§5). The agent's one action is `tipranks_fetch`, and what it reads back is the receipt. The plan has already named the views, so the agent has little to judge today; it is where further capabilities of the server would be added. Before Phase 5 the same fetch is called by `engine.refresh()`, for the tickers and kinds a notebook names.
 - **The engine validates every answer.** The server declares no output schema: an answer is JSON inside a text block, described only in the tool's description. Each mapper validates it with its own Pydantic model, normalises the three date formats the server uses and accepts a missing price target. An answer that doesn't validate raises a `ToolError` and never becomes a row.
 - **Every call is metered.** The account has `providers.tipranks.monthly_quota` tool calls a month, failed calls included; only the catalogue and the usage counter (`get_my_usage`) are free. So:
-  - a call is spent only on a kind a question needs and the cache lacks. A schedule would spend about 100 calls a month on the 19 instruments whether or not anyone asked;
+  - a call is spent only on a kind a question needs and the stored rows lack. A schedule would spend about 100 calls a month on the 19 instruments whether or not anyone asked;
   - calls are batched where the server allows it: the snapshot, the bull and bear points and the catalyst each take one call for all the tickers asked about, while rating history and the AI analysis take one call per equity;
   - a call is never repeated automatically (`max_attempts`, §10), because a failed call is counted too. The freshness check comes before each call, so a step that runs again after an interruption (§13) does not repeat a call that already landed;
-  - the fetch reads the usage counter first and stops when fewer than `reserve_calls` remain. The cached copy is then used if it has not expired, and the answer footer gives the date of the TipRanks data it used;
+  - the fetch reads the usage counter first and stops when fewer than `reserve_calls` remain. The stored copy is then used, and the answer footer gives the date of the TipRanks data it used;
   - a refusal for quota arrives as an ordinary answer, and the client raises it as a rate-limit `ToolError`;
   - no test calls the server (§9.2).
-- **TipRanks data is a cache, not part of the permanent corpus.** The server's terms of use (June 2026) allow caching to run an application. They prohibit accumulating the data, redistributing it, and using it to train or evaluate a model. So:
-  - rows fetched from the server carry an expiry (`cache_days`) and are deleted after it (§7). Staleness and expiry are two clocks: the first says when to fetch again, the second when a row must go;
-  - nothing from TipRanks enters the evaluation set, a judge's input or a committed test fixture, and evaluation runs with the provider off (§11);
+- **TipRanks data is metered and private.** The server's terms of use (June 2026) allow using the data to build and operate your own application and internal workflows. They bar redistributing it, building a standalone or competing database or product from it, and using it to train or evaluate a model. The data is reached with a private key and kept in the capstone's local database; the schema is part of the project and the data is not. So:
+  - rows fetched from the server are kept. A re-fetch adds a new row with its own `fetched_at` and never replaces the earlier one (§7). One clock remains: staleness says when to fetch again;
+  - nothing from TipRanks enters the evaluation set, a judge's input, a committed test fixture or the repository, and evaluation runs with the provider off (§11);
   - an answer that uses it carries the credit "Data by TipRanks" (§6).
 
 **Each kind has its own shelf life.** A kind is stale past its threshold in `providers.tipranks.kinds` (§10), and the thresholds differ because the data does:
@@ -171,11 +171,11 @@ These are the rules behind the retrieval diagram (PROPOSAL §4.2).
 **The as-of date.** Every run answers as of one date, and that date decides what the answer may know.
 
 - **One as-of date per run.** `engine.retrieve()`, `engine.answer()` and `engine.ask()` take an `as_of` date, which defaults to today. `route` may move it earlier only when the question states a date ("as of the end of June"). It is stamped on the `Plan`, copied into every brief (§5), stored on the run (§12) and shown in the answer footer.
-- **Two clocks, never mixed.** The as-of date is what the answer may know. The wall clock is when the run happens: it drives freshness, a provider's cache, `fetched_at` and the budget. Both come from the run context (§8), and no tool or node reads the system clock.
+- **Two clocks, never mixed.** The as-of date is what the answer may know. The wall clock is when the run happens: it drives freshness, `fetched_at` and the budget. Both come from the run context (§8), and no tool or node reads the system clock.
 - **Known by then, or not admissible.** A source is admissible only if it was known on the as-of date. This is a predicate in the same SQL query as the others: `published_at` for chunks, documents and news items, `known_at` for financial facts, the date itself for prices and `rating_date` for ratings (§7). A version of a document that was replaced before the as-of date is excluded the same way.
 - **"Latest" means latest at the as-of date.** The last close, the trailing twelve months, the ratings in force, the record that wins a tie and every trend window end at the as-of date. News recency decays from it, not from today.
 - **A period is not an as-of date.** "Apple's FY2024 revenue" names a period and is answered as of today, with any restatement since. "What did analysts expect in March?" moves the as-of date.
-- **A snapshot is only valid from its day on.** A provider's own consensus, its AI analysis, its bull and bear points and its catalyst summary are the values of the day they were fetched, and their history is not kept (§2). They are admissible for an as-of date on or after that day, and are shown with it. For an earlier as-of date there is no value to show, so they are left out and the answer says so. They are fetched on demand, so such a value exists only for the days a question asked for it.
+- **A snapshot is only valid from its day on.** A provider's own consensus, its AI analysis, its bull and bear points and its catalyst summary are the values of the day they were fetched. Each fetch adds a row with its own `fetched_at`, and the earlier rows stay (§7). A row is admissible for an as-of date on or after the day of its `fetched_at`, and is shown with that date. The latest admissible row is used: for an earlier as-of date, the latest row fetched on or before it. When there is none, the view is left out and the answer says so. They are fetched on demand, so a row exists only for the days a question asked for it.
 - **Freshness belongs to today.** `check_freshness` triggers a refresh only when the as-of date is today. For an earlier date, fetching today's data can't help, so it reports whether the corpus reaches the as-of date and what is missing, and no provider is called.
 - **Every citation carries its dates.** A hit keeps its `data_as_of` or period and its `published_at` (§5), and the citation shows them beside the source, so a reader sees how old a figure is.
 
@@ -230,7 +230,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | `tipranks_ai_analysis(ticker)` | The server's `get_ai_stock_analysis` in full detail, one call per equity: the six model ratings, each with its score, rating, price target and date | `list[AnalystRating]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_bulls_bears(tickers)` | The server's `get_bulls_bears_summary`, one batched call: the bull and bear points of each stock, each tagged with a topic | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
 | `tipranks_catalyst(tickers)` | The server's `get_stock_catalyst`, one batched call: TipRanks' summary of why each stock is moving | `list[AnalystNote]` | acquisition | TipRanks fetch (§2) |
-| `tipranks_fetch(kinds, tickers)` | Run the TipRanks fetch as a whole (§2): for each kind named, skip what is fresh in the cache, stop at the quota reserve, call that kind's tool above once, validate the answer and hand the rows to ingestion. Refused for a past as-of date | `FetchReceipt` | acquisition | TipRanks agent, directly; `engine.refresh()` before Phase 5 |
+| `tipranks_fetch(kinds, tickers)` | Run the TipRanks fetch as a whole (§2): for each kind named, skip what is fresh in the stored rows, stop at the quota reserve, call that kind's tool above once, validate the answer and hand the rows to ingestion. Refused for a past as-of date | `FetchReceipt` | acquisition | TipRanks agent, directly; `engine.refresh()` before Phase 5 |
 | `fetch_news(ticker, since)` | Collect candidate news articles and press releases for a ticker since a date | `list[AcquiredItem]` | acquisition | `acquire` (Data Aggregator) |
 | `ingest(items)` | Run the ingestion sub-graph on acquired items, named by the ids on their receipts, or on a supplied file (§2): inline for the `staleness.inline` types (the answer waits), queued to the worker for documents | `IngestReport` | acquisition | `acquire` (Data Aggregator) |
 | `parse_document(file)` | Docling conversion (via the `models` service, §9) into typed elements with page, bbox, associated caption and Docling's picture class; returns Markdown, JSON and the crops for the `ArtifactStore` to write (§3) | `ParsedDocument` | parsing | Ingestion sub-graph |
@@ -299,7 +299,7 @@ The Supervisor is not a loop and has no such file; `route` has a prompt template
 | Sub-agent | Receives | Returns |
 |---|---|---|
 | Data Aggregator | `AcquisitionBrief`: tickers and the stale data types from `check_freshness` | `AcquisitionReport`: what was ingested inline, what was queued, what failed |
-| TipRanks agent | `ViewsBrief`: tickers and the analyst views `check_freshness` found stale or missing | `FetchReport`: for each kind, whether it was fetched, served from the cache or skipped at the quota reserve; the dates covered; the metered calls used and left |
+| TipRanks agent | `ViewsBrief`: tickers and the analyst views `check_freshness` found stale or missing | `FetchReport`: for each kind, whether it was fetched, served from the stored rows or skipped at the quota reserve; the dates covered; the metered calls used and left |
 | Researcher | `ResearchBrief`: sub-query, tickers, as-of date, whether an exact figure is needed | `EvidenceSet`: the chunks and records that survived retrieval, each tagged CHECKABLE or ESTIMATED, or what is missing; in both cases, the reason for a missing figure (§4) |
 | Market Intelligence | `NewsBrief`: tickers, as-of date, date window, event types, the analyst views wanted | `NewsDigest` (§6) |
 | Financial Analyst | `AnalysisBrief`: the question, the as-of date, every `EvidenceSet` and `NewsDigest` collected, whether an exact figure is needed, the user's preferences (§13); on a redraft, the failure reason | `Draft` |
@@ -429,9 +429,9 @@ One PostgreSQL database holds everything. Typed records live in relational table
 
 **One embedding space at a time.** `chunks.embedding` has `embedding.dimensions` dimensions, and every embedder is set to that size: the hosted model and the local switch-in (PROPOSAL §8.1) both accept it. Changing the embedder still means embedding the corpus again, and `ingest_runs` says which model produced each chunk.
 
-**A refresh adds; it never destroys.** Re-ingesting a document whose content changed stores a new document with its own chunks and records. The earlier version stays and is marked `superseded_at`; retrieval excludes it with a predicate, unless the as-of date (§4) falls before that moment. So an old answer can be replayed against what it read, and the history is there when a later use needs it. There are two exceptions. A daily price is one fact, so a refresh inserts or updates on (instrument, date). And rows fetched from a provider are deleted once `expires_at` has passed, where its terms require it, as TipRanks' do (§2).
+**A refresh adds; it never destroys.** Re-ingesting a document whose content changed stores a new document with its own chunks and records. The earlier version stays and is marked `superseded_at`; retrieval excludes it with a predicate, unless the as-of date (§4) falls before that moment. So an old answer can be replayed against what it read, and the history is there when a later use needs it. There is one exception: a daily price is one fact, so a refresh inserts or updates on (instrument, date). Rows fetched from a provider are not an exception: each fetch adds a row and the earlier ones stay (§2).
 
-**Every row says when it was known.** The as-of rules (§4) need one date per row: `published_at` for documents, chunks and news items; `known_at` for a financial fact, which is the filing date for XBRL facts and filing tables; `date` for a price; `rating_date` for a rating; the day it was fetched for a provider's own consensus or note (§4).
+**Every row says when it was known.** The as-of rules (§4) need one date per row: `published_at` for documents, chunks and news items; `known_at` for a financial fact, which is the filing date for XBRL facts and filing tables; `date` for a price; `rating_date` for a rating; the day of `fetched_at` for a provider's own consensus or note, where each fetch adds a row and the latest admissible one wins (§4).
 
 **An item can concern several instruments.** A document, a chunk and a news item link to zero, one or several instruments, and a typed record stays on one. A fund document shared by several ETFs, or an article that names two companies, is then stored once and found for each. The ticker predicate (§4) reads the link in the same `WHERE` clause, and how the link is stored is settled in slice 1.1. An instrument's `type` is an open set: a type's sources and metrics come from configuration (§2, §10).
 
@@ -445,8 +445,8 @@ One PostgreSQL database holds everything. Typed records live in relational table
 | `financial_facts` | fact_id, instrument_id, doc_id, metric, value, unit, scale as reported, period, fiscal/calendar alignment, basis (reported / adjusted), scope (consolidated / segment / fund), known_at, cell reference, subtotal flag, footnotes, extraction_method (xbrl / docling_table), verification_status. Two facts are the same metric only on the same basis and scope. Equity figures from SEC XBRL data and filing tables; ETF fund fields from fund documents | Ingestion sub-graph | Researcher, Financial Analyst |
 | `prices` | price_id, instrument_id, date (unique with instrument_id), open, high, low, close, volume, source, fetched_at. The first load brings `prices.history_days` of history; each refresh inserts or updates on (instrument_id, date) | Ingestion sub-graph (price APIs) | Financial Analyst (`price_trend`), Market Intelligence (implied upside), Researcher, Supervisor (freshness) |
 | `news_items` | news_id, doc_id, item index (unique with doc_id: one document can hold several dated items), its instruments (zero, one or several), headline, event_type, sentiment, source_sentiment (the publisher's own tag, when it has one), published_at, corroborating_sources | Ingestion sub-graph | Market Intelligence |
-| `analyst_ratings` | rating_id, instrument_id, rater_kind (analyst / ai_model / source_consensus), firm, analyst, action, rating, score (AI ratings only, 0 to 100), price_target, rating_date, source, fetched_at, expires_at. Three kinds of row: an analyst's rating action; one of the six model ratings of TipRanks' AI stock analysis, with the model as the analyst; and a provider's own consensus, which also carries the next earnings date the provider reports (§2). Only the first kind enters `analyst_consensus` (§6) | Ingestion sub-graph | Market Intelligence |
-| `analyst_notes` | note_id, instrument_id, kind (bull / bear / catalyst), topic, text, data_date, source, fetched_at, expires_at, content_hash, injection_suspect. A provider's own summaries of the debate on a stock and of a price move: opinions, cited by `record_ref` (§6) | Ingestion sub-graph | Market Intelligence |
+| `analyst_ratings` | rating_id, instrument_id, rater_kind (analyst / ai_model / source_consensus), firm, analyst, action, rating, score (AI ratings only, 0 to 100), price_target, rating_date, source, fetched_at. Three kinds of row: an analyst's rating action; one of the six model ratings of TipRanks' AI stock analysis, with the model as the analyst; and a provider's own consensus, which also carries the next earnings date the provider reports (§2). Only the first kind enters `analyst_consensus` (§6) | Ingestion sub-graph | Market Intelligence |
+| `analyst_notes` | note_id, instrument_id, kind (bull / bear / catalyst), topic, text, data_date, source, fetched_at, content_hash, injection_suspect. A provider's own summaries of the debate on a stock and of a price move: opinions, cited by `record_ref` (§6) | Ingestion sub-graph | Market Intelligence |
 
 <details>
 <summary><b>Record tables</b> (5 tables; rules in §12)</summary>
@@ -690,12 +690,12 @@ owner: data-aggregator
 - refreshes that never destroy history, and file paths stored relative to a root (§7, §3);
 - the word "scenario" kept free for investment scenarios: the run record groups runs by `case_id` (§12).
 
-One limit is not a matter of code. TipRanks' terms stop the engine from accumulating its data (§2), so backtesting a TipRanks signal needs TipRanks to supply the history or to permit keeping it.
+One limit is not a matter of code. TipRanks rows are kept with their `fetched_at` (§2, §7), so a backtest has the days that were fetched and not a continuous series; a longer history needs TipRanks to supply it.
 
 **Known limits**, accepted for the capstone:
 - **One GPU.** The reranker scores one candidate at a time, so the time to rerank grows with `retrieval.candidates_k`.
 - **A sequential plan.** The plan walker runs the steps one after another, and an inline refresh holds the answer.
-- **The TipRanks quota bounds the questions, not the universe.** Nothing is fetched until a question needs it. A first question on one equity with nothing cached costs up to five metered calls, and a comparison of four equities up to eleven; a kind that is cached costs none until it goes stale.
+- **The TipRanks quota bounds the questions, not the universe.** Nothing is fetched until a question needs it. A first question on one equity with nothing stored costs up to five metered calls, and a comparison of four equities up to eleven; a kind that is stored and fresh costs none until it goes stale.
 - **One user.** No tenancy and no sign-in. Memory is namespaced by a user id so that this can change (§13).
 
 ### 9.1 Services
@@ -916,7 +916,6 @@ providers:                   # §2; optional sources of analyst views, fetched o
     enabled: false                  # needs a TipRanks subscription and TIPRANKS_MCP_TOKEN; off, every analyst view is unavailable
     monthly_quota: 200              # the plan's cap; the server's usage counter is authoritative
     reserve_calls: 50               # a fetch stops when fewer remain, keeping these for development and checks
-    cache_days: 30                  # expiry: rows fetched from the server are deleted after this (§7)
     max_attempts: 1                 # a call is never repeated automatically: a failed call is counted too (§2)
     mask_in_traces: true            # its payloads leave as ids and counts, never as content (§12)
     in_evaluation: false            # its terms prohibit evaluating a model on its data, so evaluation runs with it off (§11)
@@ -1051,8 +1050,7 @@ memory:                             # §13
   schema: langgraph                 # PostgreSQL schema of the checkpoint and store tables; Alembic ignores it
   session_turns: 6                  # earlier turns of a session shown to `route`
   episodes_k: 3                     # records of similar past runs shown to `route`
-  checkpoint_retention_days: 7      # a finished thread's checkpoints are deleted after this; never more than the shortest
-                                    # cache_days of an enabled provider
+  checkpoint_retention_days: 7      # a finished thread's checkpoints are deleted after this
   episode_ttl_days: 365             # a run record expires from the store after this
 
 tracing:                            # §12
@@ -1145,11 +1143,11 @@ source_truth:                # 1-10: how far a figure from this source can be tr
   - Dedupe precision/recall.
   - Window correctness: no item outside the requested date range.
   - `analyst_consensus` equals hand-computed results on synthetic rating rows, and adding AI model rows never changes it.
-  - A TipRanks answer that doesn't validate and a quota refusal each raise a `ToolError`; rows past their expiry are deleted.
+  - A TipRanks answer that doesn't validate and a quota refusal each raise a `ToolError`; a re-fetch adds a row and keeps the earlier one.
   - A free check, marked `network`, confirms the five server tools the mappers rely on are still in the server's catalogue.
 - **Providers (Phase 2+)**, the rules of §2 and §6, on the fake client:
   - With no provider enabled, every analyst view in the digest is marked unavailable and the answer says so.
-  - A kind that is fresh costs no call, and a stale one costs one. At the quota reserve the cached copy is used and the footer gives its date. A past as-of date triggers no fetch.
+  - A kind that is fresh costs no call, and a stale one costs one. At the quota reserve the stored copy is used and the footer gives its date. A past as-of date triggers no fetch.
   - In the week after an earnings date the shorter threshold applies to rating actions and to bull and bear points.
   - A re-fetch that returns the same content is counted as unchanged in `ingest_runs`.
   - A rating action reported by two sources is counted once in the consensus, and each source's own consensus stays its own block.
@@ -1267,7 +1265,7 @@ The capstone's claim is that every figure is traceable to its source. That has t
 Every `engine.answer()` and `engine.ask()` call writes a run record, including a run that stopped. An answer is returned only after its record is stored.
 
 - **`runs`** has one row per run: the question, the as-of date (§4), the `Plan`, the answer, the `StopReason`, the policy level and the versions that produced it (git commit, settings hash, prompt, model and skill versions). Versions are captured at run time because they can't be recovered later. The row is written when the run starts, with the status `running`, and completed when it ends, so a run whose process died is visible as one that never finished.
-- **`run_evidence`** is the evidence locker of the Day 1 hands-on: every chunk and record handed to the drafting step, stored as it was read, with its hash, the source-truth coefficient in force and whether a claim cited it. For a table, chart or picture it also stores the crop's path and hash, and the crop file itself is never overwritten (§3). A replay compares each hash with the live chunk or record and reports the sources that changed, so an old answer stays provable after a refresh. Evidence that came from the TipRanks server keeps its reference, hash and dates after the cached content has expired (§2): the answer can still be shown to have rested on it, but the content is no longer displayed.
+- **`run_evidence`** is the evidence locker of the Day 1 hands-on: every chunk and record handed to the drafting step, stored as it was read, with its hash, the source-truth coefficient in force and whether a claim cited it. For a table, chart or picture it also stores the crop's path and hash, and the crop file itself is never overwritten (§3). A replay compares each hash with the live chunk or record and reports the sources that changed, so an old answer stays provable after a refresh. Evidence that came from the TipRanks server keeps its reference, hash and dates like any other (§2): the answer can still be shown to have rested on it.
 - **`run_steps`** is the trajectory: one row per plan step, model call, action, tool call, gate and decision, in order, with its input and output, outcome, tokens, cost and latency. Sub-agent histories are kept here, under their plan step. Each step names the loop it belongs to, so the loop that spent the budget can be found. Some steps carry more:
   - a plan step, its state (§5);
   - an action, its skill and version, its script, its arguments and its result envelope (§5);
@@ -1318,7 +1316,7 @@ The course teaches memory as three layers and names PostgreSQL for it in product
 - **What a resume needs is in the state:** the plan and the artifacts of the completed steps, the calculations, and what the budget has spent (§5).
 - **A step that was cut short runs again from its start,** so every step must be safe to repeat. Reads are. Ingestion is, because a repeat is recognised by its content hash (§7). A provider fetch is, because it checks freshness before each call (§2).
 - **Sub-agents keep no memory of their own.** A sub-agent's sub-graph uses LangGraph's default: it starts fresh on each call and inherits the parent's checkpointer. Its history stays private and is dropped when it returns (§5), yet a run interrupted inside it resumes there. Per-thread sub-agent memory is not used: it does not support parallel tool calls, and it would let a history outlive its brief. A sub-graph keeps its own state schema and is called from a node, which returns the artifact and what the sub-graph spent. It never shares the parent's state keys: a shared key with an additive reducer counts the spend twice (check 13b, first run).
-- **Checkpoints are pruned.** Those of a finished thread are deleted after `memory.checkpoint_retention_days`. That is never longer than the shortest `cache_days` of an enabled provider, because a checkpoint holds the evidence a run read.
+- **Checkpoints are pruned.** Those of a finished thread are deleted after `memory.checkpoint_retention_days`.
 
 ### 13.2 Session memory
 
@@ -1346,7 +1344,7 @@ The load node reads the preferences in full and the `memory.episodes_k` run reco
 - **The as-of date applies.** A run reads no run record written after its as-of date (§4).
 - **What was read is recorded.** The memory shown to `route` is part of its input in `run_steps`, so a run can be replayed with what it saw (§12).
 - **Evaluation runs use no memory** (`memory.enabled: false`), so a case's baseline does not depend on what ran before it (§11).
-- **A provider's content is not remembered.** A run record holds ids, and checkpoints are pruned before the cached rows expire (§2).
+- **A provider's content is not remembered.** A run record holds ids; the content stays in its own tables (§2).
 - **Memory is untrusted when read.** It reaches a model as quoted data, like any retrieved text.
 
 ### 13.5 What it rests on
